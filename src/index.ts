@@ -2,11 +2,26 @@ import { readChatHistories } from './claude-code-reader.js';
 import { readCursorHistories, convertCursorToStandardFormat } from './cursor-reader.js';
 import { uploadAllHistories } from './uploader.js';
 import { runPeriodicSummaryUpdate, runPeriodicKeywordUpdate } from './summarizer.js';
+import { AuthManager } from './auth-manager.js';
 import * as fs from 'fs';
 import * as path from 'path';
 
+let authManager: AuthManager;
+
 async function processHistories() {
   console.log('Processing chat histories...');
+
+  // Ensure authenticated
+  const isAuthenticated = await authManager.ensureAuthenticated();
+
+  if (!isAuthenticated) {
+    console.log('⚠️  Authentication failed. Skipping upload.');
+    console.log('💡 Tip: Run the daemon again and authenticate in your browser.');
+    return;
+  }
+
+  const accountId = authManager.getUserId();
+  console.log(`✓ Authenticated as user: ${accountId}`);
 
   // Read Claude Code histories
   const claudeHistories = readChatHistories();
@@ -26,13 +41,16 @@ async function processHistories() {
   }
 
   console.log(`Total: ${allHistories.length} chat histories.`);
-  await uploadAllHistories(allHistories);
+  await uploadAllHistories(allHistories, accountId);
   console.log('Upload complete.');
 }
 
 async function main() {
   console.log('Agent Orchestrator Daemon Starting...');
   console.log('Running in background watch mode...');
+
+  // Initialize auth manager
+  authManager = new AuthManager();
 
   // Get the path to CLAUDE.md (assuming it's in the parent directory)
   const claudeFilePath = path.join(process.cwd(), '..', 'CLAUDE.md');

@@ -1,7 +1,10 @@
 import { supabase } from './supabase.js';
 import type { ChatHistory } from './claude-code-reader.js';
 
-export async function uploadChatHistory(history: ChatHistory): Promise<boolean> {
+export async function uploadChatHistory(
+  history: ChatHistory,
+  accountId: string | null
+): Promise<boolean> {
   try {
     // Upsert based on project ID (which is deterministic based on project path)
     // This allows us to update existing records when re-running the uploader
@@ -14,6 +17,7 @@ export async function uploadChatHistory(history: ChatHistory): Promise<boolean> 
           messages: history.messages,
           metadata: history.metadata,
           agent_type: history.agent_type,
+          account_id: accountId,
           updated_at: new Date().toISOString()
         },
         {
@@ -30,7 +34,8 @@ export async function uploadChatHistory(history: ChatHistory): Promise<boolean> 
 
     const projectPath = history.metadata?.projectPath || 'unknown';
     const messageCount = history.messages.length;
-    console.log(`✓ Uploaded: ${projectPath} (${messageCount} messages)`);
+    const authStatus = accountId ? '🔐' : '🔓';
+    console.log(`✓ ${authStatus} Uploaded: ${projectPath} (${messageCount} messages)`);
     return true;
   } catch (error) {
     console.error(`Failed to upload chat history ${history.id}:`, error);
@@ -38,14 +43,17 @@ export async function uploadChatHistory(history: ChatHistory): Promise<boolean> 
   }
 }
 
-export async function uploadAllHistories(histories: ChatHistory[]): Promise<void> {
+export async function uploadAllHistories(
+  histories: ChatHistory[],
+  accountId: string | null
+): Promise<void> {
   console.log(`Uploading ${histories.length} chat histories...`);
 
   let successCount = 0;
   let failureCount = 0;
 
   for (const history of histories) {
-    const success = await uploadChatHistory(history);
+    const success = await uploadChatHistory(history, accountId);
     if (success) {
       successCount++;
     } else {
