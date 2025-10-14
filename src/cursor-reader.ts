@@ -40,8 +40,28 @@ interface ComposerData {
   _v?: number;
   composerId: string;
   bubbles?: string[];
+  conversation?: BubbleData[];
+  fullConversationHeadersOnly?: Array<{
+    bubbleId: string;
+    type: number;
+    serverBubbleId?: string;
+  }>;
   createdAt?: string;
   workspace?: string;
+  name?: string;
+  context?: {
+    fileSelections?: Array<{
+      uri?: {
+        fsPath?: string;
+      };
+    }>;
+    folderSelections?: Array<{
+      uri?: {
+        fsPath?: string;
+      };
+    }>;
+    [key: string]: any;
+  };
   [key: string]: any;
 }
 
@@ -86,6 +106,103 @@ function parseRichText(richText: string): string {
     // If parsing fails, return as-is
   }
   return richText;
+}
+
+/**
+ * Normalize timestamp to ISO 8601 format
+ * Handles Unix timestamps (milliseconds), Unix timestamps (seconds), and ISO strings
+ */
+function normalizeTimestamp(timestamp: string | number | undefined): string {
+  if (!timestamp) {
+    return new Date().toISOString();
+  }
+
+  // If it's already a string, check if it's ISO format or a numeric string
+  if (typeof timestamp === 'string') {
+    // Check if it's a numeric string (Unix timestamp)
+    const numericTimestamp = parseInt(timestamp, 10);
+    if (!isNaN(numericTimestamp) && numericTimestamp > 0) {
+      timestamp = numericTimestamp;
+    } else {
+      // Try parsing as ISO string
+      const date = new Date(timestamp);
+      if (!isNaN(date.getTime())) {
+        return date.toISOString();
+      }
+      return new Date().toISOString();
+    }
+  }
+
+  // Handle numeric timestamps
+  if (typeof timestamp === 'number') {
+    // If timestamp is in milliseconds (> year 2000 in seconds)
+    if (timestamp > 946684800000) {
+      return new Date(timestamp).toISOString();
+    }
+    // If timestamp is in seconds
+    if (timestamp > 946684800) {
+      return new Date(timestamp * 1000).toISOString();
+    }
+  }
+
+  return new Date().toISOString();
+}
+
+/**
+ * Extract project information from composer data
+ */
+function extractProjectInfo(composerData: ComposerData): {
+  projectName?: string | undefined;
+  projectPath?: string | undefined;
+  conversationName?: string | undefined;
+} {
+  const result: {
+    projectName?: string | undefined;
+    projectPath?: string | undefined;
+    conversationName?: string | undefined;
+  } = {};
+
+  // Get conversation name if available
+  if (composerData.name) {
+    result.conversationName = composerData.name;
+  }
+
+  // Try to extract project from file selections in context
+  const context = composerData.context;
+  if (context?.fileSelections && Array.isArray(context.fileSelections)) {
+    for (const selection of context.fileSelections) {
+      if (selection.uri?.fsPath) {
+        const path = selection.uri.fsPath;
+        const parts = path.split('/');
+        const devIndex = parts.indexOf('Developer');
+
+        if (devIndex >= 0 && devIndex + 1 < parts.length) {
+          result.projectName = parts[devIndex + 1];
+          result.projectPath = parts.slice(0, devIndex + 2).join('/');
+          break; // Use first valid project path found
+        }
+      }
+    }
+  }
+
+  // Also check folder selections if no project found yet
+  if (!result.projectName && context?.folderSelections && Array.isArray(context.folderSelections)) {
+    for (const selection of context.folderSelections) {
+      if (selection.uri?.fsPath) {
+        const path = selection.uri.fsPath;
+        const parts = path.split('/');
+        const devIndex = parts.indexOf('Developer');
+
+        if (devIndex >= 0 && devIndex + 1 < parts.length) {
+          result.projectName = parts[devIndex + 1];
+          result.projectPath = parts.slice(0, devIndex + 2).join('/');
+          break;
+        }
+      }
+    }
+  }
+
+  return result;
 }
 
 /**
@@ -161,27 +278,37 @@ export function readCursorHistories(): CursorConversation[] {
       }
 
       // Build conversations
-      let emptyBubbles = 0;
-      let bubblesWithNoContent = 0;
       let conversationsWithNoMessages = 0;
-      let totalBubblesSkipped = 0;
-      let sampleEmptyBubbleLogged = false;
+      let conversationsFromConversationArray = 0;
+      let conversationsFromBubbleEntries = 0;
+      let totalMessagesExtracted = 0;
 
       for (const [composerId, composerData] of composers) {
-        const bubbles = bubblesByComposer.get(composerId) || [];
+        let bubbles: BubbleData[] = [];
+
+        // First, check if messages are stored in the 'conversation' array
+        if (composerData.conversation && Array.isArray(composerData.conversation)) {
+          bubbles = composerData.conversation;
+          if (bubbles.length > 0) {
+            conversationsFromConversationArray++;
+          }
+        }
+
+        // If no conversation array, try to get bubbles from separate entries
+        if (bubbles.length === 0) {
+          const separateBubbles = bubblesByComposer.get(composerId) || [];
+          if (separateBubbles.length > 0) {
+            bubbles = separateBubbles;
+            conversationsFromBubbleEntries++;
+          }
+        }
 
         if (bubbles.length === 0) {
-          emptyBubbles++;
+          conversationsWithNoMessages++;
           continue;
         }
 
-        // Sort bubbles by creation time
-        bubbles.sort((a, b) =>
-          new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
-        );
-
         const messages: CursorMessage[] = [];
-        let skippedInThisConversation = 0;
 
         for (const bubble of bubbles) {
           // Determine role based on bubble type
@@ -194,36 +321,24 @@ export function readCursorHistories(): CursorConversation[] {
             content = parseRichText(bubble.richText);
           }
 
-          if (!content) {
-            // Log first empty bubble as a sample
-            if (!sampleEmptyBubbleLogged) {
-              console.log(`[Cursor] Sample empty bubble:`, {
-                bubbleId: bubble.bubbleId,
-                type: bubble.type,
-                hasText: !!bubble.text,
-                hasRichText: !!bubble.richText,
-                keys: Object.keys(bubble).slice(0, 10)
-              });
-              sampleEmptyBubbleLogged = true;
-            }
-            skippedInThisConversation++;
-            totalBubblesSkipped++;
+          // Skip empty messages
+          if (!content || content.trim() === '') {
             continue;
           }
+
+          // Use createdAt if available, otherwise use composer's createdAt
+          const rawTimestamp = bubble.createdAt || composerData.createdAt;
+          const timestamp = normalizeTimestamp(rawTimestamp);
 
           messages.push({
             id: bubble.bubbleId,
             role,
             content,
-            timestamp: bubble.createdAt,
+            timestamp,
             composerId,
             bubbleId: bubble.bubbleId,
             modelName: bubble.modelInfo?.modelName
           });
-        }
-
-        if (skippedInThisConversation > 0) {
-          bubblesWithNoContent++;
         }
 
         if (messages.length === 0) {
@@ -231,21 +346,29 @@ export function readCursorHistories(): CursorConversation[] {
           continue;
         }
 
+        totalMessagesExtracted += messages.length;
+
+        // Extract project information
+        const projectInfo = extractProjectInfo(composerData);
+
         conversations.push({
           id: composerId,
-          timestamp: bubbles[0]?.createdAt || new Date().toISOString(),
+          timestamp: normalizeTimestamp(composerData.createdAt),
           messages,
-          metadata: composerData.workspace ? {
-            workspace: composerData.workspace
-          } : undefined
+          metadata: {
+            workspace: composerData.workspace,
+            projectName: projectInfo.projectName,
+            projectPath: projectInfo.projectPath,
+            conversationName: projectInfo.conversationName
+          }
         });
       }
 
       console.log(`[Cursor] Parsed ${conversations.length} conversations with messages`);
+      console.log(`[Cursor] Total messages extracted: ${totalMessagesExtracted}`);
       console.log(`[Cursor] Debug stats:`);
-      console.log(`  - Composers without bubbles: ${emptyBubbles}`);
-      console.log(`  - Conversations with skipped bubbles: ${bubblesWithNoContent}`);
-      console.log(`  - Total bubbles skipped (no content): ${totalBubblesSkipped}`);
+      console.log(`  - Conversations from 'conversation' array: ${conversationsFromConversationArray}`);
+      console.log(`  - Conversations from separate bubble entries: ${conversationsFromBubbleEntries}`);
       console.log(`  - Conversations with no valid messages: ${conversationsWithNoMessages}`);
 
     } finally {
