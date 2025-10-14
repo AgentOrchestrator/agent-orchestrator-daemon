@@ -1,5 +1,6 @@
 import { readChatHistories } from './reader.js';
 import { uploadAllHistories } from './uploader.js';
+import { runPeriodicSummaryUpdate } from './summarizer.js';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -43,6 +44,23 @@ async function main() {
       await processHistories();
     }
   });
+
+  // Start periodic AI summary updater (every 5 minutes)
+  console.log('Starting AI summary updater (runs every 5 minutes)...');
+
+  // Run immediately on startup
+  if (process.env.OPENAI_API_KEY) {
+    await runPeriodicSummaryUpdate();
+  } else {
+    console.log('[Summary Updater] Skipping: OPENAI_API_KEY not set');
+  }
+
+  // Then run every 5 minutes
+  setInterval(async () => {
+    if (process.env.OPENAI_API_KEY) {
+      await runPeriodicSummaryUpdate();
+    }
+  }, 5 * 60 * 1000); // 5 minutes
 
   console.log('Daemon is running. Press Ctrl+C to stop.');
 
