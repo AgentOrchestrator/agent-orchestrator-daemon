@@ -284,7 +284,8 @@ export function convertCursorToStandardFormat(
     })),
     metadata: {
       ...conv.metadata,
-      source: 'cursor'
+      source: 'cursor',
+      agent_type: 'cursor'
     }
   }));
 }
