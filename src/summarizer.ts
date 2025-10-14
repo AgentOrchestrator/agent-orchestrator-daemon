@@ -22,7 +22,16 @@ interface ChatHistory {
   ai_summary?: string | null;
   ai_summary_generated_at?: string | null;
   ai_summary_message_count?: number | null;
+  ai_keywords_type?: string[] | null;
+  ai_keywords_topic?: string[] | null;
+  ai_keywords_generated_at?: string | null;
+  ai_keywords_message_count?: number | null;
   updated_at: string;
+}
+
+interface KeywordClassification {
+  type: string[];
+  topic: string[];
 }
 
 async function generateSessionSummary(messages: Message[], retries = 3): Promise<string> {
@@ -83,6 +92,75 @@ Provide a brief, insightful summary:`;
   throw new Error('Failed to generate summary after retries');
 }
 
+async function generateKeywordClassification(messages: Message[], retries = 3): Promise<KeywordClassification> {
+  if (messages.length === 0) {
+    return { type: [], topic: [] };
+  }
+
+  // Construct conversation context for the AI
+  const conversationText = messages
+    .map((msg, idx) => `Message ${idx + 1}: ${msg.display}`)
+    .join('\n\n');
+
+  const prompt = `Analyze this AI coding assistant session and classify it using keywords.
+
+Session transcript:
+${conversationText}
+
+Provide a JSON response with two arrays:
+1. "type": Array of work types (choose 1-3 from: bug, feature, refactor, documentation, testing, deployment, configuration, optimization, debugging, learning, exploration)
+2. "topic": Array of specific topics/technologies the user is working on (e.g., "gmail integration", "whatsapp authentication", "database schema", "API endpoints"). Be specific and concise (2-4 words each). Limit to 3-5 most relevant topics.
+
+Respond ONLY with valid JSON in this exact format:
+{"type": ["feature", "refactor"], "topic": ["gmail integration", "email parser"]}`;
+
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const response = await openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [
+          {
+            role: 'system',
+            content: 'You are an expert at analyzing software development conversations and extracting structured keyword classifications. Always respond with valid JSON only.',
+          },
+          {
+            role: 'user',
+            content: prompt,
+          },
+        ],
+        temperature: 0.3,
+        max_tokens: 150,
+        response_format: { type: 'json_object' },
+      });
+
+      const content = response.choices[0]?.message?.content || '{"type": [], "topic": []}';
+      const parsed = JSON.parse(content);
+
+      // Validate and sanitize the response
+      return {
+        type: Array.isArray(parsed.type) ? parsed.type.slice(0, 3) : [],
+        topic: Array.isArray(parsed.topic) ? parsed.topic.slice(0, 5) : [],
+      };
+    } catch (error: any) {
+      // Handle rate limit errors with exponential backoff
+      if (error?.code === 'rate_limit_exceeded' && attempt < retries) {
+        const waitTime = error?.error?.message?.match(/try again in (\d+)ms/)?.[1];
+        const delayMs = waitTime ? parseInt(waitTime) + 100 : Math.pow(2, attempt) * 1000;
+
+        console.log(`[Keywords] Rate limit hit, waiting ${delayMs}ms before retry ${attempt + 1}/${retries}...`);
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+        continue;
+      }
+
+      console.error('Error generating keywords with GPT-4o-mini:', error);
+      // Return empty arrays on error instead of throwing
+      return { type: [], topic: [] };
+    }
+  }
+
+  return { type: [], topic: [] };
+}
+
 /**
  * Fetches sessions that need summary updates.
  * Returns sessions that:
@@ -123,6 +201,51 @@ export async function getSessionsNeedingSummaryUpdate(
       !session.ai_summary ||
       !session.ai_summary_generated_at ||
       session.ai_summary_message_count !== currentMessageCount
+    );
+  });
+
+  return needsUpdate;
+}
+
+/**
+ * Fetches sessions that need keyword updates.
+ * Returns sessions that:
+ * 1. Were updated within the specified time window
+ * 2. Either have no keywords OR their message count has changed
+ */
+export async function getSessionsNeedingKeywordUpdate(
+  withinHours: number = 1
+): Promise<ChatHistory[]> {
+  const cutoffTime = new Date();
+  cutoffTime.setHours(cutoffTime.getHours() - withinHours);
+
+  // Fetch recent sessions
+  const { data, error } = await supabase
+    .from('chat_histories')
+    .select('*')
+    .gte('updated_at', cutoffTime.toISOString())
+    .order('updated_at', { ascending: false });
+
+  if (error) {
+    console.error('Error fetching sessions for keyword update:', error);
+    return [];
+  }
+
+  // Filter sessions where message count has changed or no keywords exist
+  const needsUpdate = (data || []).filter((session: ChatHistory) => {
+    const currentMessageCount = Array.isArray(session.messages)
+      ? session.messages.length
+      : 0;
+
+    // Skip sessions with no messages
+    if (currentMessageCount === 0) {
+      return false;
+    }
+
+    // Needs update if no keywords exist or message count changed
+    return (
+      !session.ai_keywords_generated_at ||
+      session.ai_keywords_message_count !== currentMessageCount
     );
   });
 
@@ -180,6 +303,57 @@ export async function updateSessionSummary(
 }
 
 /**
+ * Generate and save keywords for a single session
+ */
+export async function updateSessionKeywords(
+  sessionId: string
+): Promise<{ success: boolean; keywords?: KeywordClassification; error?: string }> {
+  try {
+    // Fetch the session
+    const { data: session, error: fetchError } = await supabase
+      .from('chat_histories')
+      .select('*')
+      .eq('id', sessionId)
+      .single();
+
+    if (fetchError || !session) {
+      return { success: false, error: 'Session not found' };
+    }
+
+    const messages = Array.isArray(session.messages) ? session.messages : [];
+    const messageCount = messages.length;
+
+    if (messageCount === 0) {
+      return { success: false, error: 'No messages to classify' };
+    }
+
+    // Generate keywords
+    const keywords = await generateKeywordClassification(messages);
+
+    // Update database
+    const { error: updateError } = await supabase
+      .from('chat_histories')
+      .update({
+        ai_keywords_type: keywords.type,
+        ai_keywords_topic: keywords.topic,
+        ai_keywords_generated_at: new Date().toISOString(),
+        ai_keywords_message_count: messageCount,
+      })
+      .eq('id', sessionId);
+
+    if (updateError) {
+      console.error('Error updating keywords in database:', updateError);
+      return { success: false, error: 'Failed to save keywords' };
+    }
+
+    return { success: true, keywords };
+  } catch (error) {
+    console.error(`Error updating keywords for session ${sessionId}:`, error);
+    return { success: false, error: String(error) };
+  }
+}
+
+/**
  * Batch update summaries for multiple sessions with rate limit handling
  * Processes sessions sequentially with delays to avoid rate limits
  */
@@ -198,8 +372,56 @@ export async function batchUpdateSessionSummaries(
   for (let i = 0; i < sessionIds.length; i++) {
     const sessionId = sessionIds[i];
 
+    if (!sessionId) continue;
+
     try {
       const result = await updateSessionSummary(sessionId);
+      results.push({ sessionId, ...result });
+
+      // Add delay between requests (except for last one)
+      if (i < sessionIds.length - 1 && result.success) {
+        await new Promise(resolve => setTimeout(resolve, delayBetweenRequests));
+      }
+    } catch (error) {
+      results.push({
+        sessionId,
+        success: false,
+        error: String(error),
+      });
+    }
+  }
+
+  return {
+    updated: results.filter((r) => r.success).length,
+    cached: 0, // Not using cache in daemon version
+    errors: results.filter((r) => !r.success).length,
+    results,
+  };
+}
+
+/**
+ * Batch update keywords for multiple sessions with rate limit handling
+ * Processes sessions sequentially with delays to avoid rate limits
+ */
+export async function batchUpdateSessionKeywords(
+  sessionIds: string[],
+  delayBetweenRequests: number = 100
+): Promise<{
+  updated: number;
+  cached: number;
+  errors: number;
+  results: any[];
+}> {
+  const results: any[] = [];
+
+  // Process sequentially to avoid overwhelming rate limits
+  for (let i = 0; i < sessionIds.length; i++) {
+    const sessionId = sessionIds[i];
+
+    if (!sessionId) continue;
+
+    try {
+      const result = await updateSessionKeywords(sessionId);
       results.push({ sessionId, ...result });
 
       // Add delay between requests (except for last one)
@@ -252,5 +474,37 @@ export async function runPeriodicSummaryUpdate(): Promise<void> {
     });
   } catch (error) {
     console.error('[Summary Updater] Error during periodic update:', error);
+  }
+}
+
+/**
+ * Main function to run periodic keyword updates
+ * Should be called every 5 minutes (same schedule as summary updates)
+ */
+export async function runPeriodicKeywordUpdate(): Promise<void> {
+  console.log('[Keyword Updater] Starting periodic keyword update...');
+
+  try {
+    // Get sessions from the last hour that need keyword updates
+    const sessions = await getSessionsNeedingKeywordUpdate(1);
+
+    if (sessions.length === 0) {
+      console.log('[Keyword Updater] No sessions need updating');
+      return;
+    }
+
+    console.log(`[Keyword Updater] Found ${sessions.length} sessions needing keyword updates`);
+
+    // Batch update all sessions
+    const sessionIds = sessions.map((s) => s.id);
+    const result = await batchUpdateSessionKeywords(sessionIds);
+
+    console.log('[Keyword Updater] Update complete:', {
+      total: sessionIds.length,
+      updated: result.updated,
+      errors: result.errors,
+    });
+  } catch (error) {
+    console.error('[Keyword Updater] Error during periodic update:', error);
   }
 }
