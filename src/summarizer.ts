@@ -1,7 +1,17 @@
 import OpenAI from 'openai';
 import { createClient } from '@supabase/supabase-js';
+import { generateMockSummary, generateMockKeywords } from './mock-summarizer.js';
 
-const openai = new OpenAI({
+// Check if we're in development mode or if OpenAI API key is not set
+const isDevelopment = process.env.DEVELOPMENT === 'true';
+const hasOpenAIKey = !!process.env.OPENAI_API_KEY;
+
+// Use fallback (mock) mode if:
+// 1. DEVELOPMENT=true is set, OR
+// 2. OPENAI_API_KEY is not configured
+const useFallback = isDevelopment || !hasOpenAIKey;
+
+const openai = useFallback ? null : new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
@@ -37,6 +47,21 @@ interface KeywordClassification {
 async function generateSessionSummary(messages: Message[], retries = 3): Promise<string> {
   if (messages.length === 0) {
     return 'No messages in this session yet.';
+  }
+
+  // Use fallback summarizer if in development mode or OpenAI key not configured
+  if (useFallback) {
+    if (isDevelopment) {
+      console.log('[Summary] Using fallback summarizer (DEVELOPMENT mode)');
+    } else {
+      console.log('[Summary] Using fallback summarizer (OPENAI_API_KEY not set)');
+    }
+    return generateMockSummary(messages);
+  }
+
+  // Ensure openai is available
+  if (!openai) {
+    throw new Error('OpenAI client not initialized');
   }
 
   // Construct conversation context for the AI
@@ -94,6 +119,21 @@ Provide a brief, insightful summary:`;
 
 async function generateKeywordClassification(messages: Message[], retries = 3): Promise<KeywordClassification> {
   if (messages.length === 0) {
+    return { type: [], topic: [] };
+  }
+
+  // Use fallback keyword extraction if in development mode or OpenAI key not configured
+  if (useFallback) {
+    if (isDevelopment) {
+      console.log('[Keywords] Using fallback keyword extraction (DEVELOPMENT mode)');
+    } else {
+      console.log('[Keywords] Using fallback keyword extraction (OPENAI_API_KEY not set)');
+    }
+    return generateMockKeywords(messages);
+  }
+
+  // Ensure openai is available
+  if (!openai) {
     return { type: [], topic: [] };
   }
 
