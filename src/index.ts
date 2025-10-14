@@ -1,4 +1,5 @@
 import { readChatHistories } from './reader.js';
+import { readCursorHistories, convertCursorToStandardFormat } from './cursor-reader.js';
 import { uploadAllHistories } from './uploader.js';
 import { runPeriodicSummaryUpdate, runPeriodicKeywordUpdate } from './summarizer.js';
 import * as fs from 'fs';
@@ -7,15 +8,25 @@ import * as path from 'path';
 async function processHistories() {
   console.log('Processing chat histories...');
 
-  const histories = readChatHistories();
+  // Read Claude Code histories
+  const claudeHistories = readChatHistories();
+  console.log(`Found ${claudeHistories.length} Claude Code chat histories.`);
 
-  if (histories.length === 0) {
+  // Read Cursor histories
+  const cursorConversations = readCursorHistories();
+  const cursorHistories = convertCursorToStandardFormat(cursorConversations);
+  console.log(`Found ${cursorHistories.length} Cursor chat histories.`);
+
+  // Combine all histories
+  const allHistories = [...claudeHistories, ...cursorHistories];
+
+  if (allHistories.length === 0) {
     console.log('No chat histories found.');
     return;
   }
 
-  console.log(`Found ${histories.length} chat histories.`);
-  await uploadAllHistories(histories);
+  console.log(`Total: ${allHistories.length} chat histories.`);
+  await uploadAllHistories(allHistories);
   console.log('Upload complete.');
 }
 

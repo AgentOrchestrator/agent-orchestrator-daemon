@@ -5,6 +5,7 @@ import * as os from 'os';
 export interface ChatMessage {
   display: string;
   pastedContents: Record<string, any>;
+  role?: 'user' | 'assistant';
 }
 
 export interface ChatHistory {
