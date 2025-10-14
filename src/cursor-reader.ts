@@ -272,11 +272,13 @@ export function convertCursorToStandardFormat(
     pastedContents: Record<string, any>;
     role?: 'user' | 'assistant';
   }>;
+  agent_type: 'cursor';
   metadata?: Record<string, any>;
 }> {
   return conversations.map(conv => ({
     id: conv.id, // Use the original UUID without prefix
     timestamp: conv.timestamp,
+    agent_type: 'cursor' as const,
     messages: conv.messages.map(msg => ({
       display: msg.content,
       pastedContents: {},
@@ -284,8 +286,7 @@ export function convertCursorToStandardFormat(
     })),
     metadata: {
       ...conv.metadata,
-      source: 'cursor',
-      agent_type: 'cursor'
+      source: 'cursor'
     }
   }));
 }

@@ -1,5 +1,5 @@
 import { supabase } from './supabase.js';
-import type { ChatHistory } from './reader.js';
+import type { ChatHistory } from './claude-code-reader.js';
 
 export async function uploadChatHistory(history: ChatHistory): Promise<boolean> {
   try {
@@ -13,7 +13,7 @@ export async function uploadChatHistory(history: ChatHistory): Promise<boolean> 
           timestamp: history.timestamp,
           messages: history.messages,
           metadata: history.metadata,
-          agent_type: history.metadata?.agent_type || 'claude_code',
+          agent_type: history.agent_type,
           updated_at: new Date().toISOString()
         },
         {

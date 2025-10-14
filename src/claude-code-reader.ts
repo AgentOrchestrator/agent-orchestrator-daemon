@@ -12,6 +12,7 @@ export interface ChatHistory {
   id: string;
   timestamp: string;
   messages: ChatMessage[];
+  agent_type: 'claude_code' | 'codex' | 'cursor' | 'windsurf' | 'other';
   metadata?: {
     projectPath?: string;
     allowedTools?: string[];
@@ -142,6 +143,7 @@ function parseSessionFile(filePath: string, projectPath: string): ChatHistory | 
       id: sessionId,
       timestamp: lastTimestamp || firstTimestamp || new Date().toISOString(),
       messages,
+      agent_type: 'claude_code',
       metadata: {
         projectPath,
         summary: summary || undefined

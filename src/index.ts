@@ -1,4 +1,4 @@
-import { readChatHistories } from './reader.js';
+import { readChatHistories } from './claude-code-reader.js';
 import { readCursorHistories, convertCursorToStandardFormat } from './cursor-reader.js';
 import { uploadAllHistories } from './uploader.js';
 import { runPeriodicSummaryUpdate, runPeriodicKeywordUpdate } from './summarizer.js';
