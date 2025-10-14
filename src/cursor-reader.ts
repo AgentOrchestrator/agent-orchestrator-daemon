@@ -271,6 +271,7 @@ export function convertCursorToStandardFormat(
     display: string;
     pastedContents: Record<string, any>;
     role?: 'user' | 'assistant';
+    timestamp?: string;
   }>;
   agent_type: 'cursor';
   metadata?: Record<string, any>;
@@ -282,7 +283,8 @@ export function convertCursorToStandardFormat(
     messages: conv.messages.map(msg => ({
       display: msg.content,
       pastedContents: {},
-      role: msg.role
+      role: msg.role,
+      timestamp: msg.timestamp
     })),
     metadata: {
       ...conv.metadata,

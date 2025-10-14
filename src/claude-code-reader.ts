@@ -6,6 +6,7 @@ export interface ChatMessage {
   display: string;
   pastedContents: Record<string, any>;
   role?: 'user' | 'assistant';
+  timestamp?: string;
 }
 
 export interface ChatHistory {
@@ -98,12 +99,16 @@ function parseSessionFile(filePath: string, projectPath: string): ChatHistory | 
             if (typeof part === 'string') {
               messages.push({
                 display: part,
-                pastedContents: {}
+                pastedContents: {},
+                role: 'user',
+                timestamp: timestamp || new Date().toISOString()
               });
             } else if (part?.type === 'text' && part.text) {
               messages.push({
                 display: part.text,
-                pastedContents: {}
+                pastedContents: {},
+                role: 'user',
+                timestamp: timestamp || new Date().toISOString()
               });
             }
           }
@@ -123,12 +128,16 @@ function parseSessionFile(filePath: string, projectPath: string): ChatHistory | 
             if (typeof part === 'string') {
               messages.push({
                 display: part,
-                pastedContents: {}
+                pastedContents: {},
+                role: 'assistant',
+                timestamp: timestamp || new Date().toISOString()
               });
             } else if (part?.type === 'text' && part.text) {
               messages.push({
                 display: part.text,
-                pastedContents: {}
+                pastedContents: {},
+                role: 'assistant',
+                timestamp: timestamp || new Date().toISOString()
               });
             }
           }
