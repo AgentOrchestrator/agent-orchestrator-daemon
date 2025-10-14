@@ -25,7 +25,7 @@ interface ChatHistory {
   updated_at: string;
 }
 
-async function generateSessionSummary(messages: Message[]): Promise<string> {
+async function generateSessionSummary(messages: Message[], retries = 3): Promise<string> {
   if (messages.length === 0) {
     return 'No messages in this session yet.';
   }
@@ -45,28 +45,42 @@ ${conversationText}
 
 Provide a brief, insightful summary:`;
 
-  try {
-    const response = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
-      messages: [
-        {
-          role: 'system',
-          content: 'You are an expert at analyzing software development conversations and identifying user intent, problems, and progress patterns.',
-        },
-        {
-          role: 'user',
-          content: prompt,
-        },
-      ],
-      temperature: 0.7,
-      max_tokens: 200,
-    });
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const response = await openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [
+          {
+            role: 'system',
+            content: 'You are an expert at analyzing software development conversations and identifying user intent, problems, and progress patterns.',
+          },
+          {
+            role: 'user',
+            content: prompt,
+          },
+        ],
+        temperature: 0.7,
+        max_tokens: 200,
+      });
 
-    return response.choices[0]?.message?.content || 'Unable to generate summary.';
-  } catch (error) {
-    console.error('Error generating summary with GPT-4o-mini:', error);
-    throw error;
+      return response.choices[0]?.message?.content || 'Unable to generate summary.';
+    } catch (error: any) {
+      // Handle rate limit errors with exponential backoff
+      if (error?.code === 'rate_limit_exceeded' && attempt < retries) {
+        const waitTime = error?.error?.message?.match(/try again in (\d+)ms/)?.[1];
+        const delayMs = waitTime ? parseInt(waitTime) + 100 : Math.pow(2, attempt) * 1000;
+
+        console.log(`[Summary] Rate limit hit, waiting ${delayMs}ms before retry ${attempt + 1}/${retries}...`);
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+        continue;
+      }
+
+      console.error('Error generating summary with GPT-4o-mini:', error);
+      throw error;
+    }
   }
+
+  throw new Error('Failed to generate summary after retries');
 }
 
 /**
@@ -166,32 +180,46 @@ export async function updateSessionSummary(
 }
 
 /**
- * Batch update summaries for multiple sessions
+ * Batch update summaries for multiple sessions with rate limit handling
+ * Processes sessions sequentially with delays to avoid rate limits
  */
 export async function batchUpdateSessionSummaries(
-  sessionIds: string[]
+  sessionIds: string[],
+  delayBetweenRequests: number = 100
 ): Promise<{
   updated: number;
   cached: number;
   errors: number;
   results: any[];
 }> {
-  const results = await Promise.allSettled(
-    sessionIds.map(async (sessionId) => {
-      const result = await updateSessionSummary(sessionId);
-      return { sessionId, ...result };
-    })
-  );
+  const results: any[] = [];
 
-  const processedResults = results.map((result) =>
-    result.status === 'fulfilled' ? result.value : { status: 'error', error: 'Promise rejected' }
-  );
+  // Process sequentially to avoid overwhelming rate limits
+  for (let i = 0; i < sessionIds.length; i++) {
+    const sessionId = sessionIds[i];
+
+    try {
+      const result = await updateSessionSummary(sessionId);
+      results.push({ sessionId, ...result });
+
+      // Add delay between requests (except for last one)
+      if (i < sessionIds.length - 1 && result.success) {
+        await new Promise(resolve => setTimeout(resolve, delayBetweenRequests));
+      }
+    } catch (error) {
+      results.push({
+        sessionId,
+        success: false,
+        error: String(error),
+      });
+    }
+  }
 
   return {
-    updated: processedResults.filter((r) => r.success).length,
+    updated: results.filter((r) => r.success).length,
     cached: 0, // Not using cache in daemon version
-    errors: processedResults.filter((r) => !r.success).length,
-    results: processedResults,
+    errors: results.filter((r) => !r.success).length,
+    results,
   };
 }
 
