@@ -361,6 +361,10 @@ function readCopilotSessions(): CursorConversation[] {
 
               const messages: CursorMessage[] = [];
 
+              // Use session's creationDate as the base timestamp for all messages
+              // Cursor doesn't store per-message timestamps, only session-level
+              const sessionTimestamp = normalizeTimestamp(sessionData.creationDate);
+
               for (const request of sessionData.requests) {
                 // User message
                 if (request.message?.text) {
@@ -368,7 +372,7 @@ function readCopilotSessions(): CursorConversation[] {
                     id: `${sessionId}-user-${messages.length}`,
                     role: 'user',
                     content: request.message.text,
-                    timestamp: normalizeTimestamp(request.timestamp || Date.now()),
+                    timestamp: sessionTimestamp,
                     sessionId
                   });
                 }
@@ -386,7 +390,7 @@ function readCopilotSessions(): CursorConversation[] {
                       id: `${sessionId}-assistant-${messages.length}`,
                       role: 'assistant',
                       content: responseText,
-                      timestamp: normalizeTimestamp(request.timestamp || Date.now()),
+                      timestamp: sessionTimestamp,
                       sessionId
                     });
                   }
