@@ -46,7 +46,8 @@ interface ComposerData {
     type: number;
     serverBubbleId?: string;
   }>;
-  createdAt?: string;
+  createdAt?: string | number;
+  lastUpdatedAt?: string | number;
   workspace?: string;
   name?: string;
   context?: {
@@ -310,6 +311,10 @@ export function readCursorHistories(): CursorConversation[] {
 
         const messages: CursorMessage[] = [];
 
+        // Use composer-level timestamp since bubble timestamps are often incorrect
+        // The createdAt is when the conversation started
+        const conversationStartTime = normalizeTimestamp(composerData.createdAt);
+
         for (const bubble of bubbles) {
           // Determine role based on bubble type
           // type 1 = user message, type 2 = assistant message
@@ -326,9 +331,9 @@ export function readCursorHistories(): CursorConversation[] {
             continue;
           }
 
-          // Use createdAt if available, otherwise use composer's createdAt
-          const rawTimestamp = bubble.createdAt || composerData.createdAt;
-          const timestamp = normalizeTimestamp(rawTimestamp);
+          // Use composer's createdAt as the base timestamp for all messages
+          // since bubble-level timestamps are often incorrect/placeholder values
+          const timestamp = conversationStartTime;
 
           messages.push({
             id: bubble.bubbleId,
@@ -351,9 +356,15 @@ export function readCursorHistories(): CursorConversation[] {
         // Extract project information
         const projectInfo = extractProjectInfo(composerData);
 
+        // Use lastUpdatedAt for the conversation timestamp (when the last message was added)
+        // Fall back to createdAt if lastUpdatedAt is not available
+        const conversationTimestamp = normalizeTimestamp(
+          composerData.lastUpdatedAt || composerData.createdAt
+        );
+
         conversations.push({
           id: composerId,
-          timestamp: normalizeTimestamp(composerData.createdAt),
+          timestamp: conversationTimestamp,
           messages,
           metadata: {
             workspace: composerData.workspace,
