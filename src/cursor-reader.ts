@@ -8,19 +8,35 @@ export interface CursorMessage {
   role: 'user' | 'assistant';
   content: string;
   timestamp: string;
-  composerId: string;
-  bubbleId: string;
+  composerId?: string;
+  bubbleId?: string;
+  sessionId?: string;
   modelName?: string | undefined;
 }
 
 export interface CursorConversation {
-  id: string; // composerId
+  id: string; // composerId or sessionId
   timestamp: string;
   messages: CursorMessage[];
+  conversationType: 'composer' | 'copilot';
   metadata?: {
     workspace?: string | undefined;
+    workspaceId?: string | undefined;
+    projectName?: string | undefined;
+    projectPath?: string | undefined;
+    conversationName?: string | undefined;
+    source: 'cursor-composer' | 'cursor-copilot';
     [key: string]: any;
   } | undefined;
+}
+
+export interface ProjectInfo {
+  name: string;
+  path: string;
+  workspaceIds: string[];
+  composerCount: number;
+  copilotSessionCount: number;
+  lastActivity: string;
 }
 
 interface BubbleData {
@@ -207,6 +223,290 @@ function extractProjectInfo(composerData: ComposerData): {
 }
 
 /**
+ * Get the path to Cursor's workspace storage
+ */
+function getCursorWorkspaceStoragePath(): string {
+  const homeDir = os.homedir();
+  return path.join(
+    homeDir,
+    'Library',
+    'Application Support',
+    'Cursor',
+    'User',
+    'workspaceStorage'
+  );
+}
+
+/**
+ * Parse workspace.json to get workspace information
+ */
+interface WorkspaceInfo {
+  workspaceId: string;
+  folder?: string | undefined;
+  workspace?: any;
+}
+
+function getWorkspaceInfo(workspaceDir: string): WorkspaceInfo | null {
+  const workspaceJsonPath = path.join(workspaceDir, 'workspace.json');
+
+  if (!fs.existsSync(workspaceJsonPath)) {
+    return null;
+  }
+
+  try {
+    const workspaceJson = JSON.parse(fs.readFileSync(workspaceJsonPath, 'utf-8'));
+    const workspaceId = path.basename(workspaceDir);
+
+    // Extract folder path from workspace.json
+    let folder: string | undefined;
+    if (workspaceJson.folder) {
+      // Handle file:// URIs
+      const uri = workspaceJson.folder;
+      if (typeof uri === 'string') {
+        folder = uri.replace('file://', '');
+      } else if (uri.path) {
+        folder = uri.path;
+      }
+    }
+
+    return {
+      workspaceId,
+      folder,
+      workspace: workspaceJson
+    };
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
+ * Read Copilot sessions from workspace databases
+ */
+function readCopilotSessions(): CursorConversation[] {
+  const conversations: CursorConversation[] = [];
+  const workspaceStoragePath = getCursorWorkspaceStoragePath();
+
+  if (!fs.existsSync(workspaceStoragePath)) {
+    console.log('[Cursor] Workspace storage not found');
+    return conversations;
+  }
+
+  const workspaceDirs = fs.readdirSync(workspaceStoragePath)
+    .map(name => path.join(workspaceStoragePath, name))
+    .filter(p => fs.statSync(p).isDirectory());
+
+  console.log(`[Cursor] Scanning ${workspaceDirs.length} workspace directories for Copilot sessions...`);
+
+  let totalSessions = 0;
+
+  for (const workspaceDir of workspaceDirs) {
+    const dbPath = path.join(workspaceDir, 'state.vscdb');
+
+    if (!fs.existsSync(dbPath)) {
+      continue;
+    }
+
+    const workspaceInfo = getWorkspaceInfo(workspaceDir);
+    if (!workspaceInfo) {
+      continue;
+    }
+
+    try {
+      const db = new Database(dbPath, { readonly: true });
+
+      try {
+        // Check if ItemTable exists
+        const tables = db.prepare(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name='ItemTable'"
+        ).all();
+
+        if (tables.length === 0) {
+          db.close();
+          continue;
+        }
+
+        // Get interactive sessions - stored as an array in 'interactive.sessions' key
+        const sessionRow = db.prepare(
+          "SELECT value FROM ItemTable WHERE key = 'interactive.sessions'"
+        ).get() as { value: string } | undefined;
+
+        if (sessionRow) {
+          try {
+            const sessionsArray = JSON.parse(sessionRow.value);
+
+            if (!Array.isArray(sessionsArray)) {
+              db.close();
+              continue;
+            }
+
+            for (let sessionIndex = 0; sessionIndex < sessionsArray.length; sessionIndex++) {
+              const sessionData = sessionsArray[sessionIndex];
+              const sessionId = `${workspaceInfo.workspaceId}-session-${sessionIndex}`;
+
+              if (!sessionData.requests || !Array.isArray(sessionData.requests)) {
+                continue;
+              }
+
+              const messages: CursorMessage[] = [];
+
+              for (const request of sessionData.requests) {
+                // User message
+                if (request.message?.text) {
+                  messages.push({
+                    id: `${sessionId}-user-${messages.length}`,
+                    role: 'user',
+                    content: request.message.text,
+                    timestamp: normalizeTimestamp(request.timestamp || Date.now()),
+                    sessionId
+                  });
+                }
+
+                // Assistant message
+                if (request.response && Array.isArray(request.response)) {
+                  // Response is an array of response parts
+                  const responseText = request.response
+                    .map((part: any) => part.value || '')
+                    .filter((text: string) => text.trim() !== '')
+                    .join('\n');
+
+                  if (responseText) {
+                    messages.push({
+                      id: `${sessionId}-assistant-${messages.length}`,
+                      role: 'assistant',
+                      content: responseText,
+                      timestamp: normalizeTimestamp(request.timestamp || Date.now()),
+                      sessionId
+                    });
+                  }
+                }
+              }
+
+              if (messages.length === 0) {
+                continue;
+              }
+
+              totalSessions++;
+
+              // Extract project info from workspace folder
+              let projectName: string | undefined;
+              let projectPath: string | undefined;
+
+              if (workspaceInfo.folder) {
+                const parts = workspaceInfo.folder.split('/');
+                const devIndex = parts.indexOf('Developer');
+
+                if (devIndex >= 0 && devIndex + 1 < parts.length) {
+                  projectName = parts[devIndex + 1];
+                  projectPath = parts.slice(0, devIndex + 2).join('/');
+                }
+              }
+
+              const lastMessage = messages[messages.length - 1];
+              if (!lastMessage) {
+                continue;
+              }
+
+              conversations.push({
+                id: sessionId,
+                timestamp: lastMessage.timestamp,
+                messages,
+                conversationType: 'copilot',
+                metadata: {
+                  workspaceId: workspaceInfo.workspaceId,
+                  workspace: workspaceInfo.folder,
+                  projectName,
+                  projectPath,
+                  source: 'cursor-copilot'
+                }
+              });
+            }
+
+          } catch (e) {
+            // Skip malformed session data
+          }
+        }
+
+      } finally {
+        db.close();
+      }
+
+    } catch (error) {
+      // Skip databases we can't read
+      continue;
+    }
+  }
+
+  console.log(`[Cursor] Found ${totalSessions} Copilot sessions`);
+
+  return conversations;
+}
+
+/**
+ * Extract project information from all conversations
+ */
+export function extractProjectsFromConversations(
+  conversations: CursorConversation[]
+): ProjectInfo[] {
+  const projectsMap = new Map<string, {
+    name: string;
+    path: string;
+    workspaceIds: Set<string>;
+    composerCount: number;
+    copilotSessionCount: number;
+    lastActivity: Date;
+  }>();
+
+  for (const conv of conversations) {
+    const projectPath = conv.metadata?.projectPath;
+    const projectName = conv.metadata?.projectName;
+
+    if (!projectPath || !projectName) {
+      continue;
+    }
+
+    if (!projectsMap.has(projectPath)) {
+      projectsMap.set(projectPath, {
+        name: projectName,
+        path: projectPath,
+        workspaceIds: new Set(),
+        composerCount: 0,
+        copilotSessionCount: 0,
+        lastActivity: new Date(conv.timestamp)
+      });
+    }
+
+    const project = projectsMap.get(projectPath)!;
+
+    // Add workspace ID if available
+    if (conv.metadata?.workspaceId) {
+      project.workspaceIds.add(conv.metadata.workspaceId);
+    }
+
+    // Update counts
+    if (conv.conversationType === 'composer') {
+      project.composerCount++;
+    } else if (conv.conversationType === 'copilot') {
+      project.copilotSessionCount++;
+    }
+
+    // Update last activity
+    const convDate = new Date(conv.timestamp);
+    if (convDate > project.lastActivity) {
+      project.lastActivity = convDate;
+    }
+  }
+
+  return Array.from(projectsMap.values()).map(project => ({
+    name: project.name,
+    path: project.path,
+    workspaceIds: Array.from(project.workspaceIds),
+    composerCount: project.composerCount,
+    copilotSessionCount: project.copilotSessionCount,
+    lastActivity: project.lastActivity.toISOString()
+  }));
+}
+
+/**
  * Read all Cursor chat histories from the SQLite database
  */
 export function readCursorHistories(): CursorConversation[] {
@@ -366,11 +666,13 @@ export function readCursorHistories(): CursorConversation[] {
           id: composerId,
           timestamp: conversationTimestamp,
           messages,
+          conversationType: 'composer',
           metadata: {
             workspace: composerData.workspace,
             projectName: projectInfo.projectName,
             projectPath: projectInfo.projectPath,
-            conversationName: projectInfo.conversationName
+            conversationName: projectInfo.conversationName,
+            source: 'cursor-composer'
           }
         });
       }
@@ -389,6 +691,18 @@ export function readCursorHistories(): CursorConversation[] {
   } catch (error) {
     console.error('[Cursor] Error reading Cursor histories:', error);
   }
+
+  // Read Copilot sessions from workspace databases
+  try {
+    const copilotConversations = readCopilotSessions();
+    conversations.push(...copilotConversations);
+  } catch (error) {
+    console.error('[Cursor] Error reading Copilot sessions:', error);
+  }
+
+  console.log(`[Cursor] Total conversations: ${conversations.length}`);
+  console.log(`  - Composer: ${conversations.filter(c => c.conversationType === 'composer').length}`);
+  console.log(`  - Copilot: ${conversations.filter(c => c.conversationType === 'copilot').length}`);
 
   return conversations;
 }

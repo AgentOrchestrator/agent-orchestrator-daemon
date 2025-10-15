@@ -1,5 +1,6 @@
 import { supabase } from './supabase.js';
 import type { ChatHistory } from './claude-code-reader.js';
+import type { ProjectInfo } from './cursor-reader.js';
 
 export async function uploadChatHistory(
   history: ChatHistory,
@@ -55,6 +56,80 @@ export async function uploadChatHistory(
     console.error(`Failed to upload chat history ${history.id}:`, error);
     return false;
   }
+}
+
+/**
+ * Upsert a project to the database
+ */
+export async function upsertProject(
+  project: ProjectInfo,
+  accountId: string | null
+): Promise<string | null> {
+  if (!accountId) {
+    console.log(`Skipping project ${project.name} (not authenticated)`);
+    return null;
+  }
+
+  try {
+    // Build workspace metadata from project info
+    const workspaceMetadata = {
+      workspaceIds: project.workspaceIds,
+      composerCount: project.composerCount,
+      copilotSessionCount: project.copilotSessionCount,
+      lastActivity: project.lastActivity
+    };
+
+    const { data, error } = await supabase
+      .from('projects')
+      .upsert(
+        {
+          user_id: accountId,
+          name: project.name,
+          project_path: project.path,
+          workspace_metadata: workspaceMetadata,
+          updated_at: new Date().toISOString()
+        },
+        {
+          onConflict: 'user_id,project_path',
+          ignoreDuplicates: false
+        }
+      )
+      .select('id')
+      .single();
+
+    if (error) {
+      console.error(`Error upserting project ${project.name}:`, error);
+      return null;
+    }
+
+    console.log(`✓ Project: ${project.name} (Composer: ${project.composerCount}, Copilot: ${project.copilotSessionCount})`);
+    return data.id;
+  } catch (error) {
+    console.error(`Failed to upsert project ${project.name}:`, error);
+    return null;
+  }
+}
+
+/**
+ * Sync all projects from conversations
+ */
+export async function syncProjects(
+  projects: ProjectInfo[],
+  accountId: string | null
+): Promise<Map<string, string>> {
+  console.log(`\nSyncing ${projects.length} projects...`);
+
+  const projectIdMap = new Map<string, string>(); // Map project path to project ID
+
+  for (const project of projects) {
+    const projectId = await upsertProject(project, accountId);
+    if (projectId) {
+      projectIdMap.set(project.path, projectId);
+    }
+  }
+
+  console.log(`Project sync complete: ${projectIdMap.size}/${projects.length} synced\n`);
+  return projectIdMap;
 }
 
 export async function uploadAllHistories(
