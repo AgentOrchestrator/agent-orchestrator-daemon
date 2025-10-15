@@ -86,8 +86,8 @@ async function main() {
   await processHistories();
 
   // Set up periodic session data sync
-  // Get sync interval from environment variable (default: 1 minute)
-  const syncIntervalMs = parseInt(process.env.PERIODIC_SYNC_INTERVAL_MS || '60000', 10);
+  // Get sync interval from environment variable (default: 5 minutes)
+  const syncIntervalMs = parseInt(process.env.PERIODIC_SYNC_INTERVAL_MS || '300000', 10);
   console.log(`Setting up periodic session sync (every ${syncIntervalMs}ms / ${syncIntervalMs / 1000}s)...`);
 
   setInterval(async () => {
