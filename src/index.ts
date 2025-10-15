@@ -4,6 +4,7 @@ import { uploadAllHistories, syncProjects } from './uploader.js';
 import { runPeriodicSummaryUpdate, runPeriodicKeywordUpdate } from './summarizer.js';
 import { AuthManager } from './auth-manager.js';
 import { mergeProjects } from './project-aggregator.js';
+import { runPeriodicActivitySync } from './activity-syncer.js';
 
 let authManager: AuthManager;
 
@@ -108,6 +109,24 @@ async function main() {
     await runPeriodicSummaryUpdate();
     await runPeriodicKeywordUpdate();
   }, 5 * 60 * 1000); // 5 minutes
+
+  // Start periodic editor activity monitoring (every 2 minutes)
+  // This tracks which editors are actively being used
+  console.log('Starting editor activity monitor (run every 2 minutes)...');
+
+  // Run immediately on startup
+  const accountId = authManager.getUserId();
+  if (accountId) {
+    await runPeriodicActivitySync(accountId);
+  }
+
+  // Then run every 2 minutes
+  setInterval(async () => {
+    const userId = authManager.getUserId();
+    if (userId) {
+      await runPeriodicActivitySync(userId);
+    }
+  }, 2 * 60 * 1000); // 2 minutes
 
   console.log('Daemon is running. Press Ctrl+C to stop.');
 

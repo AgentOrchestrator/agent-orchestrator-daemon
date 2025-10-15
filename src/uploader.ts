@@ -1,6 +1,7 @@
 import { supabase } from './supabase.js';
 import type { ChatHistory } from './claude-code-reader.js';
 import type { UnifiedProjectInfo } from './project-aggregator.js';
+import { normalizePath } from './activity-detector.js';
 
 export async function uploadChatHistory(
   history: ChatHistory,
@@ -20,6 +21,15 @@ export async function uploadChatHistory(
       latestMessageTimestamp = timestamps[0] || null;
     }
 
+    // Normalize paths in metadata before uploading
+    const normalizedMetadata = { ...history.metadata };
+    if (normalizedMetadata.projectPath) {
+      normalizedMetadata.projectPath = normalizePath(normalizedMetadata.projectPath) || normalizedMetadata.projectPath;
+    }
+    if (normalizedMetadata.workspace) {
+      normalizedMetadata.workspace = normalizePath(normalizedMetadata.workspace) || normalizedMetadata.workspace;
+    }
+
     // Upsert based on project ID (which is deterministic based on project path)
     // This allows us to update existing records when re-running the uploader
     const { error } = await supabase
@@ -29,7 +39,7 @@ export async function uploadChatHistory(
           id: history.id,
           timestamp: history.timestamp,
           messages: history.messages,
-          metadata: history.metadata,
+          metadata: normalizedMetadata,
           agent_type: history.agent_type,
           account_id: accountId,
           latest_message_timestamp: latestMessageTimestamp,
@@ -71,6 +81,9 @@ export async function upsertProject(
   }
 
   try {
+    // Normalize project path before upserting
+    const normalizedPath = normalizePath(project.path) || project.path;
+
     // Build workspace metadata from project info
     const workspaceMetadata = {
       workspaceIds: project.workspaceIds,
@@ -86,7 +99,7 @@ export async function upsertProject(
         {
           user_id: accountId,
           name: project.name,
-          project_path: project.path,
+          project_path: normalizedPath,
           workspace_metadata: workspaceMetadata,
           updated_at: new Date().toISOString()
         },
