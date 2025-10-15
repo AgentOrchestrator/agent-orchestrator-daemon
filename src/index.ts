@@ -73,6 +73,17 @@ async function main() {
     console.log('✓ Using existing authentication session');
   }
 
+  // Set up periodic token refresh (every 30 minutes)
+  // This ensures the session stays alive even during long-running daemon processes
+  setInterval(async () => {
+    const stillAuthenticated = await authManager.isAuthenticated();
+    if (stillAuthenticated) {
+      console.log('[Auth] Token refreshed successfully');
+    } else {
+      console.log('[Auth] Token refresh failed - authentication required');
+    }
+  }, 30 * 60 * 1000); // 30 minutes
+
   // Get the path to CLAUDE.md (assuming it's in the parent directory)
   const claudeFilePath = path.join(process.cwd(), '..', 'CLAUDE.md');
 
