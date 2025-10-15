@@ -4,8 +4,6 @@ import { uploadAllHistories, syncProjects } from './uploader.js';
 import { runPeriodicSummaryUpdate, runPeriodicKeywordUpdate } from './summarizer.js';
 import { AuthManager } from './auth-manager.js';
 import { mergeProjects } from './project-aggregator.js';
-import * as fs from 'fs';
-import * as path from 'path';
 
 let authManager: AuthManager;
 
@@ -84,27 +82,18 @@ async function main() {
     }
   }, 30 * 60 * 1000); // 30 minutes
 
-  // Get the path to CLAUDE.md (assuming it's in the parent directory)
-  const claudeFilePath = path.join(process.cwd(), '..', 'CLAUDE.md');
-
-  if (!fs.existsSync(claudeFilePath)) {
-    console.error(`CLAUDE.md not found at: ${claudeFilePath}`);
-    console.log('Creating CLAUDE.md file...');
-    fs.writeFileSync(claudeFilePath, '# Claude Code Chat History\n\n');
-  }
-
-  console.log(`Watching file: ${claudeFilePath}`);
-
   // Process immediately on startup
   await processHistories();
 
-  // Watch for file changes
-  fs.watch(claudeFilePath, async (eventType, filename) => {
-    if (eventType === 'change') {
-      console.log(`\nDetected change in ${filename}`);
-      await processHistories();
-    }
-  });
+  // Set up periodic session data sync
+  // Get sync interval from environment variable (default: 1 minute)
+  const syncIntervalMs = parseInt(process.env.PERIODIC_SYNC_INTERVAL_MS || '60000', 10);
+  console.log(`Setting up periodic session sync (every ${syncIntervalMs}ms / ${syncIntervalMs / 1000}s)...`);
+
+  setInterval(async () => {
+    console.log('\n[Periodic Sync] Checking for new session data...');
+    await processHistories();
+  }, syncIntervalMs);
 
   // Start periodic AI summary and keyword updaters (every 5 minutes)
   // Note: These will automatically use fallback mode if OPENAI_API_KEY is not set
