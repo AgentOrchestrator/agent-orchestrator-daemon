@@ -146,6 +146,27 @@ export class TrayManager {
       });
     }
 
+    // Add authentication status / action
+    menuItems.push({
+      type: 'separator',
+    });
+
+    if (this.currentStatus === DaemonStatus.UNAUTHENTICATED) {
+      // Show clickable "Sign In" when not authenticated
+      if (this.onAuthenticateCallback) {
+        menuItems.push({
+          label: '🔓 Sign In',
+          click: () => this.onAuthenticateCallback?.(),
+        });
+      }
+    } else {
+      // Show status indicator when authenticated (non-clickable)
+      menuItems.push({
+        label: '✓ Authenticated',
+        enabled: false,
+      });
+    }
+
     menuItems.push(
       {
         type: 'separator',
