@@ -101,23 +101,21 @@ export class TrayManager {
     ];
 
     // Add "Authenticate" option if not authenticated
-    if (this.currentStatus === DaemonStatus.UNAUTHENTICATED && this.onAuthenticateCallback) {
-      menuItems.push({
-        label: 'Authenticate',
-        click: () => this.onAuthenticateCallback?.(),
-      });
-    }
-
-    // Add "Sync Now" option if authenticated
-    if (
-      this.currentStatus !== DaemonStatus.UNAUTHENTICATED &&
-      this.currentStatus !== DaemonStatus.SYNCING &&
-      this.onSyncNowCallback
-    ) {
-      menuItems.push({
-        label: 'Sync Now',
-        click: () => this.onSyncNowCallback?.(),
-      });
+    if (this.currentStatus === DaemonStatus.UNAUTHENTICATED) {
+      if (this.onAuthenticateCallback) {
+        menuItems.push({
+          label: 'Authenticate',
+          click: () => this.onAuthenticateCallback?.(),
+        });
+      }
+    } else {
+      // Add "Sync Now" option if authenticated
+      if (this.currentStatus !== DaemonStatus.SYNCING && this.onSyncNowCallback) {
+        menuItems.push({
+          label: 'Sync Now',
+          click: () => this.onSyncNowCallback?.(),
+        });
+      }
     }
 
     // Add "Open Dashboard" option

@@ -13,6 +13,7 @@ let daemonProcess: any = null;
 
 // Track daemon status based on log output
 let currentStatus: DaemonStatus = DaemonStatus.UNAUTHENTICATED;
+let authUrl: string | null = null;
 
 function startDaemon() {
   console.log('Starting daemon process...');
@@ -29,6 +30,13 @@ function startDaemon() {
   daemonProcess.stdout.on('data', (data: Buffer) => {
     const output = data.toString();
     console.log(output);
+
+    // Capture auth URL from daemon output
+    const urlMatch = output.match(/Or copy this URL: (http[^\s]+)/);
+    if (urlMatch && urlMatch[1]) {
+      authUrl = urlMatch[1];
+      console.log('[Electron] Captured auth URL:', authUrl);
+    }
 
     // Update tray status based on daemon output
     if (output.includes('✓ Using existing authentication session') ||
@@ -71,13 +79,27 @@ function updateTrayStatus(status: DaemonStatus) {
 
 function handleAuthenticate() {
   console.log('Opening authentication URL...');
-  // The daemon already outputs the auth URL, user just needs to check terminal
-  // Or we could parse the URL from daemon output and open it
-  exec('open http://localhost:3000/daemon-auth', (error) => {
-    if (error) {
-      console.error('Failed to open browser:', error);
-    }
-  });
+
+  if (authUrl) {
+    // Open the captured auth URL with device_id
+    exec(`open "${authUrl}"`, (error) => {
+      if (error) {
+        console.error('Failed to open browser:', error);
+      } else {
+        console.log('[Electron] Opened browser for authentication');
+      }
+    });
+  } else {
+    // Fallback: open default daemon-auth page
+    const webUrl = process.env.WEB_URL || 'http://localhost:3000';
+    exec(`open "${webUrl}/daemon-auth"`, (error) => {
+      if (error) {
+        console.error('Failed to open browser:', error);
+      } else {
+        console.log('[Electron] Opened browser for authentication (no device_id captured yet)');
+      }
+    });
+  }
 }
 
 function handleSyncNow() {
