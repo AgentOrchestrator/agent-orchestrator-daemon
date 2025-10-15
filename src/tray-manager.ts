@@ -22,6 +22,7 @@ interface StatusConfig {
 export class TrayManager {
   private tray: TrayType | null = null;
   private currentStatus: DaemonStatus = DaemonStatus.UNAUTHENTICATED;
+  private lastSyncTime: Date | null = null;
   private onAuthenticateCallback?: () => void;
   private onSyncNowCallback?: () => void;
   private onOpenDashboardCallback?: () => void;
@@ -43,6 +44,13 @@ export class TrayManager {
     this.tray.setTitle(config.icon);
 
     this.updateTray();
+
+    // Update the "time ago" display every minute
+    setInterval(() => {
+      if (this.lastSyncTime && this.currentStatus === DaemonStatus.IDLE) {
+        this.updateTray();
+      }
+    }, 60000); // Every 60 seconds
   }
 
   private createIcon(status: DaemonStatus): string {
@@ -55,6 +63,16 @@ export class TrayManager {
     return iconMap[status];
   }
 
+  private formatTimeAgo(date: Date): string {
+    const now = new Date();
+    const seconds = Math.floor((now.getTime() - date.getTime()) / 1000);
+
+    if (seconds < 60) return 'just now';
+    if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+    if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+    return `${Math.floor(seconds / 86400)}d ago`;
+  }
+
   private getStatusConfig(status: DaemonStatus): StatusConfig {
     const configs: Record<DaemonStatus, StatusConfig> = {
       [DaemonStatus.UNAUTHENTICATED]: {
@@ -65,7 +83,9 @@ export class TrayManager {
       [DaemonStatus.IDLE]: {
         icon: '✅',
         tooltip: 'Agent Orchestrator - Ready',
-        menuLabel: '✅ Ready',
+        menuLabel: this.lastSyncTime
+          ? `✅ Last sync: ${this.formatTimeAgo(this.lastSyncTime)}`
+          : '✅ Ready',
       },
       [DaemonStatus.SYNCING]: {
         icon: '🔄',
@@ -143,7 +163,17 @@ export class TrayManager {
   }
 
   setStatus(status: DaemonStatus) {
+    // Update last sync time when transitioning from syncing to idle
+    if (status === DaemonStatus.IDLE && this.currentStatus === DaemonStatus.SYNCING) {
+      this.lastSyncTime = new Date();
+    }
+
     this.currentStatus = status;
+    this.updateTray();
+  }
+
+  updateLastSyncTime() {
+    this.lastSyncTime = new Date();
     this.updateTray();
   }
 
