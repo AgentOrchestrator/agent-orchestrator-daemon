@@ -1,7 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { exec } from 'child_process';
 import { v4 as uuidv4 } from 'uuid';
 import { supabase } from './supabase.js';
 
@@ -134,26 +133,6 @@ export class AuthManager {
     return `${webUrl}/daemon-auth?device_id=${this.deviceId}`;
   }
 
-  private openBrowser(url: string): void {
-    const platform = process.platform;
-    let command: string;
-
-    if (platform === 'darwin') {
-      command = `open "${url}"`;
-    } else if (platform === 'win32') {
-      command = `start "" "${url}"`;
-    } else {
-      // Linux/Unix
-      command = `xdg-open "${url}"`;
-    }
-
-    exec(command, (error) => {
-      if (error) {
-        console.log('⚠️  Could not automatically open browser. Please open the URL manually.');
-      }
-    });
-  }
-
   async waitForAuth(timeoutMs: number = 300000): Promise<boolean> {
     const startTime = Date.now();
     const pollInterval = 2000; // Poll every 2 seconds
@@ -161,14 +140,11 @@ export class AuthManager {
 
     console.log('\n🔐 Authentication Required');
     console.log('─'.repeat(50));
-    console.log('Opening browser for authentication...');
-    console.log(`\nURL: ${authUrl}\n`);
-    console.log('If browser does not open, please copy the URL above.');
+    console.log('Please click the link below to authenticate:');
+    console.log(`\n\x1b]8;;${authUrl}\x1b\\🔗 Open Authentication Page\x1b]8;;\x1b\\\n`);
+    console.log(`Or copy this URL: ${authUrl}\n`);
     console.log('Waiting for authentication...');
     console.log('─'.repeat(50));
-
-    // Automatically open the browser
-    this.openBrowser(authUrl);
 
     while (Date.now() - startTime < timeoutMs) {
       // Check if auth has been completed
