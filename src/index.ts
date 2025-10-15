@@ -75,22 +75,17 @@ async function main() {
   });
 
   // Start periodic AI summary and keyword updaters (every 5 minutes)
+  // Note: These will automatically use fallback mode if OPENAI_API_KEY is not set
   console.log('Starting AI summary and keyword updaters (run every 5 minutes)...');
 
   // Run immediately on startup
-  if (process.env.OPENAI_API_KEY) {
-    await runPeriodicSummaryUpdate();
-    await runPeriodicKeywordUpdate();
-  } else {
-    console.log('[AI Updater] Skipping: OPENAI_API_KEY not set');
-  }
+  await runPeriodicSummaryUpdate();
+  await runPeriodicKeywordUpdate();
 
   // Then run every 5 minutes
   setInterval(async () => {
-    if (process.env.OPENAI_API_KEY) {
-      await runPeriodicSummaryUpdate();
-      await runPeriodicKeywordUpdate();
-    }
+    await runPeriodicSummaryUpdate();
+    await runPeriodicKeywordUpdate();
   }, 5 * 60 * 1000); // 5 minutes
 
   console.log('Daemon is running. Press Ctrl+C to stop.');

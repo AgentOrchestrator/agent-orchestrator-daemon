@@ -6,6 +6,19 @@ export async function uploadChatHistory(
   accountId: string | null
 ): Promise<boolean> {
   try {
+    // Calculate the latest message timestamp from the messages array
+    let latestMessageTimestamp: string | null = null;
+    if (history.messages && history.messages.length > 0) {
+      // Find the most recent timestamp among all messages
+      const timestamps = history.messages
+        .map(msg => msg.timestamp)
+        .filter((ts): ts is string => !!ts)
+        .sort()
+        .reverse();
+
+      latestMessageTimestamp = timestamps[0] || null;
+    }
+
     // Upsert based on project ID (which is deterministic based on project path)
     // This allows us to update existing records when re-running the uploader
     const { error } = await supabase
@@ -18,6 +31,7 @@ export async function uploadChatHistory(
           metadata: history.metadata,
           agent_type: history.agent_type,
           account_id: accountId,
+          latest_message_timestamp: latestMessageTimestamp,
           updated_at: new Date().toISOString()
         },
         {
