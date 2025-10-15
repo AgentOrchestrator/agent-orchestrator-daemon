@@ -12,13 +12,18 @@ let authManager: AuthManager;
 async function processHistories() {
   console.log('Processing chat histories...');
 
-  // Ensure authenticated
-  const isAuthenticated = await authManager.ensureAuthenticated();
+  // Check if already authenticated (silently checks and refreshes token if needed)
+  const alreadyAuthenticated = await authManager.isAuthenticated();
 
-  if (!isAuthenticated) {
-    console.log('⚠️  Authentication failed. Skipping upload.');
-    console.log('💡 Tip: Run the daemon again and authenticate in your browser.');
-    return;
+  if (!alreadyAuthenticated) {
+    // Only prompt for authentication if not already authenticated
+    const isAuthenticated = await authManager.waitForAuth();
+
+    if (!isAuthenticated) {
+      console.log('⚠️  Authentication failed. Skipping upload.');
+      console.log('💡 Tip: Run the daemon again and authenticate in your browser.');
+      return;
+    }
   }
 
   const accountId = authManager.getUserId();
@@ -61,6 +66,12 @@ async function main() {
 
   // Initialize auth manager
   authManager = new AuthManager();
+
+  // Check authentication status on startup
+  const alreadyAuthenticated = await authManager.isAuthenticated();
+  if (alreadyAuthenticated) {
+    console.log('✓ Using existing authentication session');
+  }
 
   // Get the path to CLAUDE.md (assuming it's in the parent directory)
   const claudeFilePath = path.join(process.cwd(), '..', 'CLAUDE.md');
