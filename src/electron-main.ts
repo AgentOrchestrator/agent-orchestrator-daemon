@@ -39,21 +39,26 @@ function startDaemon() {
     }
 
     // Update tray status based on daemon output
-    if (output.includes('✓ Using existing authentication session') ||
-        output.includes('✓ Authentication successful')) {
-      updateTrayStatus(DaemonStatus.IDLE);
-    } else if (output.includes('🔐 Authentication Required')) {
+    if (output.includes('🔐 Authentication Required')) {
       updateTrayStatus(DaemonStatus.UNAUTHENTICATED);
-    } else if (output.includes('[Periodic Sync]') ||
-               output.includes('Processing chat histories')) {
-      updateTrayStatus(DaemonStatus.SYNCING);
-    } else if (output.includes('Upload complete') ||
-               output.includes('No chat histories found')) {
-      updateTrayStatus(DaemonStatus.IDLE);
     } else if (output.includes('⚠️') ||
                output.includes('Error') ||
                output.includes('failed')) {
       updateTrayStatus(DaemonStatus.ERROR);
+    } else if (output.includes('[Periodic Sync]') ||
+               output.includes('Processing chat histories') ||
+               (output.includes('Total:') && output.includes('chat histories'))) {
+      updateTrayStatus(DaemonStatus.SYNCING);
+    } else if (output.includes('Upload complete') ||
+               output.includes('No chat histories found')) {
+      updateTrayStatus(DaemonStatus.IDLE);
+    } else if (output.includes('✓ Using existing authentication session') ||
+               output.includes('✓ Authentication successful') ||
+               output.includes('✓ Authenticated as user:')) {
+      // Only set to IDLE if we're not currently syncing
+      if (currentStatus !== DaemonStatus.SYNCING) {
+        updateTrayStatus(DaemonStatus.IDLE);
+      }
     }
   });
 
