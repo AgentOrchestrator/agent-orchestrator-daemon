@@ -21,6 +21,14 @@ export interface ChatHistory {
   };
 }
 
+export interface ProjectInfo {
+  name: string;
+  path: string;
+  workspaceIds: string[];
+  claudeCodeSessionCount: number;
+  lastActivity: string;
+}
+
 export function getClaudeConfigPath(): string {
   const claudeHome = process.env.CLAUDE_CODE_HOME;
 
@@ -211,4 +219,55 @@ export function readChatHistories(): ChatHistory[] {
   }
 
   return histories;
+}
+
+/**
+ * Extract project information from Claude Code chat histories
+ */
+export function extractProjectsFromClaudeCodeHistories(
+  histories: ChatHistory[]
+): ProjectInfo[] {
+  const projectsMap = new Map<string, {
+    name: string;
+    path: string;
+    sessionCount: number;
+    lastActivity: Date;
+  }>();
+
+  for (const history of histories) {
+    const projectPath = history.metadata?.projectPath;
+
+    if (!projectPath) {
+      continue;
+    }
+
+    // Extract project name from path (last directory)
+    const projectName = path.basename(projectPath);
+
+    if (!projectsMap.has(projectPath)) {
+      projectsMap.set(projectPath, {
+        name: projectName,
+        path: projectPath,
+        sessionCount: 0,
+        lastActivity: new Date(history.timestamp)
+      });
+    }
+
+    const project = projectsMap.get(projectPath)!;
+    project.sessionCount++;
+
+    // Update last activity
+    const historyDate = new Date(history.timestamp);
+    if (historyDate > project.lastActivity) {
+      project.lastActivity = historyDate;
+    }
+  }
+
+  return Array.from(projectsMap.values()).map(project => ({
+    name: project.name,
+    path: project.path,
+    workspaceIds: [], // Claude Code doesn't have workspace IDs
+    claudeCodeSessionCount: project.sessionCount,
+    lastActivity: project.lastActivity.toISOString()
+  }));
 }

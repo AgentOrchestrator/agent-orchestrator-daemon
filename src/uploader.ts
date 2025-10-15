@@ -1,6 +1,6 @@
 import { supabase } from './supabase.js';
 import type { ChatHistory } from './claude-code-reader.js';
-import type { ProjectInfo } from './cursor-reader.js';
+import type { UnifiedProjectInfo } from './project-aggregator.js';
 
 export async function uploadChatHistory(
   history: ChatHistory,
@@ -62,7 +62,7 @@ export async function uploadChatHistory(
  * Upsert a project to the database
  */
 export async function upsertProject(
-  project: ProjectInfo,
+  project: UnifiedProjectInfo,
   accountId: string | null
 ): Promise<string | null> {
   if (!accountId) {
@@ -76,6 +76,7 @@ export async function upsertProject(
       workspaceIds: project.workspaceIds,
       composerCount: project.composerCount,
       copilotSessionCount: project.copilotSessionCount,
+      claudeCodeSessionCount: project.claudeCodeSessionCount,
       lastActivity: project.lastActivity
     };
 
@@ -102,7 +103,12 @@ export async function upsertProject(
       return null;
     }
 
-    console.log(`✓ Project: ${project.name} (Composer: ${project.composerCount}, Copilot: ${project.copilotSessionCount})`);
+    const counts = [];
+    if (project.composerCount > 0) counts.push(`Composer: ${project.composerCount}`);
+    if (project.copilotSessionCount > 0) counts.push(`Copilot: ${project.copilotSessionCount}`);
+    if (project.claudeCodeSessionCount > 0) counts.push(`Claude Code: ${project.claudeCodeSessionCount}`);
+
+    console.log(`✓ Project: ${project.name} (${counts.join(', ')})`);
     return data.id;
   } catch (error) {
     console.error(`Failed to upsert project ${project.name}:`, error);
@@ -114,7 +120,7 @@ export async function upsertProject(
  * Sync all projects from conversations
  */
 export async function syncProjects(
-  projects: ProjectInfo[],
+  projects: UnifiedProjectInfo[],
   accountId: string | null
 ): Promise<Map<string, string>> {
   console.log(`\nSyncing ${projects.length} projects...`);

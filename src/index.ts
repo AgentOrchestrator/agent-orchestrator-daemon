@@ -1,8 +1,9 @@
-import { readChatHistories } from './claude-code-reader.js';
+import { readChatHistories, extractProjectsFromClaudeCodeHistories } from './claude-code-reader.js';
 import { readCursorHistories, convertCursorToStandardFormat, extractProjectsFromConversations } from './cursor-reader.js';
 import { uploadAllHistories, syncProjects } from './uploader.js';
 import { runPeriodicSummaryUpdate, runPeriodicKeywordUpdate } from './summarizer.js';
 import { AuthManager } from './auth-manager.js';
+import { mergeProjects } from './project-aggregator.js';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -32,10 +33,13 @@ async function processHistories() {
   const cursorHistories = convertCursorToStandardFormat(cursorConversations);
   console.log(`Found ${cursorHistories.length} Cursor chat histories.`);
 
-  // Extract and sync projects from Cursor conversations
-  const projects = extractProjectsFromConversations(cursorConversations);
-  if (projects.length > 0) {
-    await syncProjects(projects, accountId);
+  // Extract and merge projects from both Claude Code and Cursor
+  const claudeCodeProjects = extractProjectsFromClaudeCodeHistories(claudeHistories);
+  const cursorProjects = extractProjectsFromConversations(cursorConversations);
+  const allProjects = mergeProjects(cursorProjects, claudeCodeProjects);
+
+  if (allProjects.length > 0) {
+    await syncProjects(allProjects, accountId);
   }
 
   // Combine all histories

@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
+import { createHash } from 'crypto';
 
 export interface CursorMessage {
   id: string;
@@ -80,6 +81,16 @@ interface ComposerData {
     [key: string]: any;
   };
   [key: string]: any;
+}
+
+/**
+ * Generate a deterministic UUID v4-compatible ID from a string
+ * This ensures consistent IDs across runs for the same workspace/session
+ */
+function generateDeterministicUUID(input: string): string {
+  const hash = createHash('md5').update(input).digest('hex');
+  // Format as UUID v4: xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx
+  return `${hash.substring(0, 8)}-${hash.substring(8, 12)}-4${hash.substring(13, 16)}-${hash.substring(16, 20)}-${hash.substring(20, 32)}`;
 }
 
 /**
@@ -341,7 +352,8 @@ function readCopilotSessions(): CursorConversation[] {
 
             for (let sessionIndex = 0; sessionIndex < sessionsArray.length; sessionIndex++) {
               const sessionData = sessionsArray[sessionIndex];
-              const sessionId = `${workspaceInfo.workspaceId}-session-${sessionIndex}`;
+              // Generate a deterministic UUID based on workspace ID and session index
+              const sessionId = generateDeterministicUUID(`${workspaceInfo.workspaceId}-session-${sessionIndex}`);
 
               if (!sessionData.requests || !Array.isArray(sessionData.requests)) {
                 continue;
@@ -507,6 +519,114 @@ export function extractProjectsFromConversations(
 }
 
 /**
+ * Detect which storage format is being used in the database
+ */
+function detectStorageFormat(db: Database.Database): 'cursorDiskKV' | 'ItemTable' {
+  try {
+    // Check if cursorDiskKV has data
+    const cursorDiskKVCount = db.prepare(
+      "SELECT COUNT(*) as count FROM cursorDiskKV WHERE key LIKE 'composerData:%'"
+    ).get() as { count: number };
+
+    if (cursorDiskKVCount.count > 0) {
+      console.log('[Cursor] Detected cursorDiskKV format (legacy)');
+      return 'cursorDiskKV';
+    }
+
+    // Check if ItemTable has composer data
+    const itemTableCount = db.prepare(
+      "SELECT COUNT(*) as count FROM ItemTable WHERE key = 'composer.composerData'"
+    ).get() as { count: number };
+
+    if (itemTableCount.count > 0) {
+      console.log('[Cursor] Detected ItemTable format (new)');
+      return 'ItemTable';
+    }
+
+    // Default to cursorDiskKV for backwards compatibility
+    console.log('[Cursor] No data found, defaulting to cursorDiskKV format');
+    return 'cursorDiskKV';
+  } catch (error) {
+    console.log('[Cursor] Error detecting format, defaulting to cursorDiskKV:', error);
+    return 'cursorDiskKV';
+  }
+}
+
+/**
+ * Read composers from new ItemTable format
+ */
+function readComposersFromItemTable(db: Database.Database): Map<string, ComposerData> {
+  const composers = new Map<string, ComposerData>();
+
+  try {
+    const row = db.prepare(
+      "SELECT value FROM ItemTable WHERE key = 'composer.composerData'"
+    ).get() as { value: string } | undefined;
+
+    if (!row) {
+      console.log('[Cursor] No composer data found in ItemTable');
+      return composers;
+    }
+
+    const composerData = JSON.parse(row.value) as { allComposers: any[] };
+
+    if (!composerData.allComposers || !Array.isArray(composerData.allComposers)) {
+      console.log('[Cursor] Invalid composer data structure in ItemTable');
+      return composers;
+    }
+
+    // In the new format, we only have metadata, not the full conversation
+    // We'll need to mark these as having no messages for now
+    for (const composer of composerData.allComposers) {
+      if (composer.composerId) {
+        composers.set(composer.composerId, {
+          composerId: composer.composerId,
+          name: composer.name,
+          createdAt: composer.createdAt,
+          lastUpdatedAt: composer.lastUpdatedAt,
+          workspace: composer.workspace,
+          // Note: The new format doesn't store full conversation data here
+          // Messages would need to be reconstructed from other sources
+          conversation: []
+        } as ComposerData);
+      }
+    }
+
+    console.log(`[Cursor] Found ${composers.size} composers in ItemTable format`);
+  } catch (error) {
+    console.error('[Cursor] Error reading composers from ItemTable:', error);
+  }
+
+  return composers;
+}
+
+/**
+ * Read composers from legacy cursorDiskKV format
+ */
+function readComposersFromCursorDiskKV(db: Database.Database): Map<string, ComposerData> {
+  const composers = new Map<string, ComposerData>();
+
+  const composerRows = db.prepare(
+    'SELECT key, value FROM cursorDiskKV WHERE key LIKE ?'
+  ).all('composerData:%') as Array<{ key: string; value: string }>;
+
+  for (const row of composerRows) {
+    try {
+      const composerData = JSON.parse(row.value) as ComposerData;
+      const composerId = row.key.replace('composerData:', '');
+      composerData.composerId = composerId;
+      composers.set(composerId, composerData);
+    } catch (e) {
+      // Skip malformed composer data
+      continue;
+    }
+  }
+
+  console.log(`[Cursor] Found ${composers.size} composers in cursorDiskKV format`);
+  return composers;
+}
+
+/**
  * Read all Cursor chat histories from the SQLite database
  */
 export function readCursorHistories(): CursorConversation[] {
@@ -526,57 +646,53 @@ export function readCursorHistories(): CursorConversation[] {
     const db = new Database(dbPath, { readonly: true });
 
     try {
-      // Get all composer IDs and their data
-      const composers = new Map<string, ComposerData>();
-      const composerRows = db.prepare(
-        'SELECT key, value FROM cursorDiskKV WHERE key LIKE ?'
-      ).all('composerData:%') as Array<{ key: string; value: string }>;
+      // Detect which storage format is being used
+      const format = detectStorageFormat(db);
 
-      for (const row of composerRows) {
-        try {
-          const composerData = JSON.parse(row.value) as ComposerData;
-          const composerId = row.key.replace('composerData:', '');
-          composerData.composerId = composerId;
-          composers.set(composerId, composerData);
-        } catch (e) {
-          // Skip malformed composer data
-          continue;
-        }
+      // Read composers based on the detected format
+      let composers: Map<string, ComposerData>;
+      if (format === 'ItemTable') {
+        composers = readComposersFromItemTable(db);
+      } else {
+        composers = readComposersFromCursorDiskKV(db);
       }
 
       console.log(`[Cursor] Found ${composers.size} conversations`);
 
-      // Get all bubble messages
-      const bubbleRows = db.prepare(
-        'SELECT key, value FROM cursorDiskKV WHERE key LIKE ?'
-      ).all('bubbleId:%') as Array<{ key: string; value: string }>;
-
-      // Organize bubbles by composer ID
+      // Get all bubble messages (only for legacy format)
       const bubblesByComposer = new Map<string, BubbleData[]>();
 
-      for (const row of bubbleRows) {
-        try {
-          const bubbleData = JSON.parse(row.value) as BubbleData;
-          const keyParts = row.key.split(':');
+      if (format === 'cursorDiskKV') {
+        const bubbleRows = db.prepare(
+          'SELECT key, value FROM cursorDiskKV WHERE key LIKE ?'
+        ).all('bubbleId:%') as Array<{ key: string; value: string }>;
 
-          if (keyParts.length >= 3) {
-            const composerId = keyParts[1];
-            const bubbleId = keyParts[2];
+        for (const row of bubbleRows) {
+          try {
+            const bubbleData = JSON.parse(row.value) as BubbleData;
+            const keyParts = row.key.split(':');
 
-            if (!composerId || !bubbleId) continue;
+            if (keyParts.length >= 3) {
+              const composerId = keyParts[1];
+              const bubbleId = keyParts[2];
 
-            bubbleData.bubbleId = bubbleId;
+              if (!composerId || !bubbleId) continue;
 
-            if (!bubblesByComposer.has(composerId)) {
-              bubblesByComposer.set(composerId, []);
+              bubbleData.bubbleId = bubbleId;
+
+              if (!bubblesByComposer.has(composerId)) {
+                bubblesByComposer.set(composerId, []);
+              }
+              bubblesByComposer.get(composerId)!.push(bubbleData);
             }
-            bubblesByComposer.get(composerId)!.push(bubbleData);
+          } catch (e) {
+            // Skip malformed bubble data
+            continue;
           }
-        } catch (e) {
-          // Skip malformed bubble data
-          continue;
         }
       }
+      // For ItemTable format, bubble data would need to be read from a different location
+      // Currently, the new format appears to not store full conversation history in the same way
 
       // Build conversations
       let conversationsWithNoMessages = 0;
@@ -680,9 +796,16 @@ export function readCursorHistories(): CursorConversation[] {
       console.log(`[Cursor] Parsed ${conversations.length} conversations with messages`);
       console.log(`[Cursor] Total messages extracted: ${totalMessagesExtracted}`);
       console.log(`[Cursor] Debug stats:`);
+      console.log(`  - Storage format: ${format}`);
       console.log(`  - Conversations from 'conversation' array: ${conversationsFromConversationArray}`);
       console.log(`  - Conversations from separate bubble entries: ${conversationsFromBubbleEntries}`);
       console.log(`  - Conversations with no valid messages: ${conversationsWithNoMessages}`);
+
+      if (format === 'ItemTable' && conversationsWithNoMessages > 0) {
+        console.log(`[Cursor] WARNING: New ItemTable format detected with ${conversationsWithNoMessages} conversations without messages`);
+        console.log(`[Cursor] The new format stores conversation metadata separately from messages`);
+        console.log(`[Cursor] Full conversation history may not be available in this format yet`);
+      }
 
     } finally {
       db.close();
