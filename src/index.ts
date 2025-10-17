@@ -1,7 +1,7 @@
 import { readChatHistories, extractProjectsFromClaudeCodeHistories } from './claude-code-reader.js';
 import { readCursorHistories, convertCursorToStandardFormat, extractProjectsFromConversations } from './cursor-reader.js';
 import { uploadAllHistories, syncProjects } from './uploader.js';
-import { runPeriodicSummaryUpdate, runPeriodicKeywordUpdate } from './summarizer.js';
+import { runPeriodicSummaryUpdate, runPeriodicKeywordUpdate, runPeriodicTitleUpdate } from './summarizer.js';
 import { AuthManager } from './auth-manager.js';
 import { mergeProjects } from './project-aggregator.js';
 
@@ -97,16 +97,18 @@ async function main() {
 
   // Start periodic AI summary and keyword updaters (every 5 minutes)
   // Note: These will automatically use fallback mode if OPENAI_API_KEY is not set
-  console.log('Starting AI summary and keyword updaters (run every 5 minutes)...');
+  console.log('Starting AI summary, keyword, and title updaters (run every 5 minutes)...');
 
   // Run immediately on startup
   await runPeriodicSummaryUpdate();
   await runPeriodicKeywordUpdate();
+  await runPeriodicTitleUpdate();
 
   // Then run every 5 minutes
   setInterval(async () => {
     await runPeriodicSummaryUpdate();
     await runPeriodicKeywordUpdate();
+    await runPeriodicTitleUpdate();
   }, 5 * 60 * 1000); // 5 minutes
 
   console.log('Daemon is running. Press Ctrl+C to stop.');
