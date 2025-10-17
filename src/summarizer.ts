@@ -327,19 +327,28 @@ Provide ONLY the title, nothing else:`;
  * 1. Were created within the specified time window (default 24 hours)
  * 2. Either have no summary OR their message count has changed
  * 3. User has AI summaries enabled in preferences
+ * 4. Belong to the specified user (if userId is provided)
  */
 export async function getSessionsNeedingSummaryUpdate(
-  withinHours: number = 24
+  withinHours: number = 24,
+  userId?: string | null
 ): Promise<ChatHistory[]> {
   const cutoffTime = new Date();
   cutoffTime.setHours(cutoffTime.getHours() - withinHours);
 
-  // Fetch recent sessions
-  const { data, error } = await supabase
+  // Build query
+  let query = supabase
     .from('chat_histories')
     .select('*')
-    .gte('created_at', cutoffTime.toISOString())
-    .order('created_at', { ascending: false });
+    .gte('created_at', cutoffTime.toISOString());
+
+  // Filter by user if provided
+  if (userId) {
+    query = query.eq('account_id', userId);
+  }
+
+  // Fetch recent sessions
+  const { data, error } = await query.order('created_at', { ascending: false });
 
   if (error) {
     console.error('Error fetching sessions for summary update:', error);
@@ -405,19 +414,28 @@ export async function getSessionsNeedingSummaryUpdate(
  * 1. Were created within the specified time window (default 24 hours)
  * 2. Either have no keywords OR their message count has changed
  * 3. User has AI summaries enabled in preferences
+ * 4. Belong to the specified user (if userId is provided)
  */
 export async function getSessionsNeedingKeywordUpdate(
-  withinHours: number = 24
+  withinHours: number = 24,
+  userId?: string | null
 ): Promise<ChatHistory[]> {
   const cutoffTime = new Date();
   cutoffTime.setHours(cutoffTime.getHours() - withinHours);
 
-  // Fetch recent sessions
-  const { data, error } = await supabase
+  // Build query
+  let query = supabase
     .from('chat_histories')
     .select('*')
-    .gte('created_at', cutoffTime.toISOString())
-    .order('created_at', { ascending: false });
+    .gte('created_at', cutoffTime.toISOString());
+
+  // Filter by user if provided
+  if (userId) {
+    query = query.eq('account_id', userId);
+  }
+
+  // Fetch recent sessions
+  const { data, error } = await query.order('created_at', { ascending: false });
 
   if (error) {
     console.error('Error fetching sessions for keyword update:', error);
@@ -483,19 +501,28 @@ export async function getSessionsNeedingKeywordUpdate(
  * 2. Don't have an AI-generated title yet
  * 3. Don't already have a conversation name in metadata (e.g., from Cursor)
  * 4. User has AI titles enabled in preferences
+ * 5. Belong to the specified user (if userId is provided)
  */
 export async function getSessionsNeedingTitleUpdate(
-  withinHours: number = 24
+  withinHours: number = 24,
+  userId?: string | null
 ): Promise<ChatHistory[]> {
   const cutoffTime = new Date();
   cutoffTime.setHours(cutoffTime.getHours() - withinHours);
 
-  // Fetch recent sessions
-  const { data, error } = await supabase
+  // Build query
+  let query = supabase
     .from('chat_histories')
     .select('*')
-    .gte('created_at', cutoffTime.toISOString())
-    .order('created_at', { ascending: false });
+    .gte('created_at', cutoffTime.toISOString());
+
+  // Filter by user if provided
+  if (userId) {
+    query = query.eq('account_id', userId);
+  }
+
+  // Fetch recent sessions
+  const { data, error } = await query.order('created_at', { ascending: false });
 
   if (error) {
     console.error('Error fetching sessions for title update:', error);
@@ -818,13 +845,14 @@ export async function batchUpdateSessionKeywords(
  * Main function to run periodic summary updates
  * Should be called every 5 minutes
  * Only processes sessions updated within the last 24 hours
+ * @param userId - Optional user ID to filter sessions (recommended to avoid processing other users' sessions)
  */
-export async function runPeriodicSummaryUpdate(): Promise<void> {
+export async function runPeriodicSummaryUpdate(userId?: string | null): Promise<void> {
   console.log('[Summary Updater] Starting periodic summary update...');
 
   try {
     // Get sessions from the last 24 hours that need updates
-    const sessions = await getSessionsNeedingSummaryUpdate(24);
+    const sessions = await getSessionsNeedingSummaryUpdate(24, userId);
 
     if (sessions.length === 0) {
       console.log('[Summary Updater] No sessions need updating');
@@ -851,13 +879,14 @@ export async function runPeriodicSummaryUpdate(): Promise<void> {
  * Main function to run periodic keyword updates
  * Should be called every 5 minutes (same schedule as summary updates)
  * Only processes sessions updated within the last 24 hours
+ * @param userId - Optional user ID to filter sessions (recommended to avoid processing other users' sessions)
  */
-export async function runPeriodicKeywordUpdate(): Promise<void> {
+export async function runPeriodicKeywordUpdate(userId?: string | null): Promise<void> {
   console.log('[Keyword Updater] Starting periodic keyword update...');
 
   try {
     // Get sessions from the last 24 hours that need keyword updates
-    const sessions = await getSessionsNeedingKeywordUpdate(24);
+    const sessions = await getSessionsNeedingKeywordUpdate(24, userId);
 
     if (sessions.length === 0) {
       console.log('[Keyword Updater] No sessions need updating');
@@ -930,13 +959,14 @@ export async function batchUpdateSessionTitles(
  * Main function to run periodic title updates
  * Should be called every 5 minutes (same schedule as summary updates)
  * Only processes sessions updated within the last 24 hours
+ * @param userId - Optional user ID to filter sessions (recommended to avoid processing other users' sessions)
  */
-export async function runPeriodicTitleUpdate(): Promise<void> {
+export async function runPeriodicTitleUpdate(userId?: string | null): Promise<void> {
   console.log('[Title Updater] Starting periodic title update...');
 
   try {
     // Get sessions from the last 24 hours that need title updates
-    const sessions = await getSessionsNeedingTitleUpdate(24);
+    const sessions = await getSessionsNeedingTitleUpdate(24, userId);
 
     if (sessions.length === 0) {
       console.log('[Title Updater] No sessions need updating');
