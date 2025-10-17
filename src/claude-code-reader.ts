@@ -173,7 +173,7 @@ function parseSessionFile(filePath: string, projectPath: string): ChatHistory | 
 /**
  * Read all chat histories from ~/.claude directory
  */
-export function readChatHistories(): ChatHistory[] {
+export function readChatHistories(lookbackDays?: number): ChatHistory[] {
   const histories: ChatHistory[] = [];
 
   try {
@@ -184,6 +184,14 @@ export function readChatHistories(): ChatHistory[] {
     if (!fs.existsSync(projectsDir)) {
       console.log('No ~/.claude/projects directory found');
       return histories;
+    }
+
+    // Calculate cutoff date if lookback is specified
+    let cutoffDate: Date | null = null;
+    if (lookbackDays && lookbackDays > 0) {
+      cutoffDate = new Date();
+      cutoffDate.setDate(cutoffDate.getDate() - lookbackDays);
+      console.log(`[Claude Code Reader] Filtering files modified after ${cutoffDate.toISOString()}`);
     }
 
     // Read all project directories
@@ -203,6 +211,16 @@ export function readChatHistories(): ChatHistory[] {
 
       for (const sessionFile of sessionFiles) {
         const sessionFilePath = path.join(projectDirPath, sessionFile);
+
+        // Check file modification time if filtering is enabled
+        if (cutoffDate) {
+          const stats = fs.statSync(sessionFilePath);
+          if (stats.mtime < cutoffDate) {
+            // Skip files that haven't been modified within the lookback period
+            continue;
+          }
+        }
+
         const history = parseSessionFile(sessionFilePath, projectPath);
 
         if (history && history.messages.length > 0) {
