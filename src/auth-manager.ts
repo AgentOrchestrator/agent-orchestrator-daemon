@@ -124,6 +124,10 @@ export class AuthManager {
     return this.authState?.userId || null;
   }
 
+  getAccessToken(): string | null {
+    return this.authState?.accessToken || null;
+  }
+
   getDeviceId(): string {
     return this.deviceId;
   }

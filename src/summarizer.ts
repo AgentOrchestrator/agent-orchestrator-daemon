@@ -15,10 +15,11 @@ const openai = useFallback ? null : new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-// Create Supabase client with service role key (safe in backend daemon)
+// Create Supabase client with anon key (respects RLS)
+// This client is only used for read operations that respect user permissions
 const supabase = createClient(
   process.env.SUPABASE_URL || '',
-  process.env.SUPABASE_SERVICE_ROLE_KEY || ''
+  process.env.SUPABASE_ANON_KEY || ''
 );
 
 interface Message {

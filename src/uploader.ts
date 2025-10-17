@@ -1,4 +1,4 @@
-import { supabase } from './supabase.js';
+import { createAuthenticatedClient } from './supabase.js';
 import type { ChatHistory } from './claude-code-reader.js';
 import type { UnifiedProjectInfo } from './project-aggregator.js';
 
@@ -8,7 +8,8 @@ import type { UnifiedProjectInfo } from './project-aggregator.js';
  */
 async function findOrCreateProject(
   history: ChatHistory,
-  accountId: string | null
+  accountId: string | null,
+  client: ReturnType<typeof createAuthenticatedClient>
 ): Promise<string | null> {
   if (!accountId) {
     return null;
@@ -19,7 +20,7 @@ async function findOrCreateProject(
   // If no project name in metadata, link to default "Uncategorized" project
   if (!projectName) {
     // Try to find existing default project
-    const { data: existingDefault } = await supabase
+    const { data: existingDefault } = await client
       .from('projects')
       .select('id')
       .eq('user_id', accountId)
@@ -31,7 +32,7 @@ async function findOrCreateProject(
     }
 
     // Default project doesn't exist, create it
-    const { data: newDefault, error: createError } = await supabase
+    const { data: newDefault, error: createError } = await client
       .from('projects')
       .insert({
         user_id: accountId,
@@ -53,7 +54,7 @@ async function findOrCreateProject(
   }
 
   // Find or create project with this name
-  const { data: existingProject } = await supabase
+  const { data: existingProject } = await client
     .from('projects')
     .select('id')
     .eq('user_id', accountId)
@@ -65,7 +66,7 @@ async function findOrCreateProject(
   }
 
   // Project doesn't exist, create it
-  const { data: newProject, error: createError } = await supabase
+  const { data: newProject, error: createError } = await client
     .from('projects')
     .insert({
       user_id: accountId,
@@ -88,8 +89,16 @@ async function findOrCreateProject(
 
 export async function uploadChatHistory(
   history: ChatHistory,
-  accountId: string | null
+  accountId: string | null,
+  accessToken: string | null
 ): Promise<boolean> {
+  if (!accessToken) {
+    console.error('No access token provided');
+    return false;
+  }
+
+  const client = createAuthenticatedClient(accessToken);
+
   try {
     // Calculate the latest message timestamp from the messages array
     let latestMessageTimestamp: string | null = null;
@@ -105,11 +114,11 @@ export async function uploadChatHistory(
     }
 
     // Find or create project for this session
-    const projectId = await findOrCreateProject(history, accountId);
+    const projectId = await findOrCreateProject(history, accountId, client);
 
     // Upsert based on session ID
     // This allows us to update existing records when re-running the uploader
-    const { error } = await supabase
+    const { error } = await client
       .from('chat_histories')
       .upsert(
         {
@@ -151,14 +160,17 @@ export async function uploadChatHistory(
  */
 export async function upsertProject(
   project: UnifiedProjectInfo,
-  accountId: string | null
+  accountId: string | null,
+  accessToken: string | null
 ): Promise<string | null> {
-  if (!accountId) {
+  if (!accountId || !accessToken) {
     console.log(`Skipping project ${project.name} (not authenticated)`);
     return null;
   }
 
-  try {
+  const client = createAuthenticatedClient(accessToken);
+
+  try{
     // Build workspace metadata from project info
     const workspaceMetadata = {
       workspaceIds: project.workspaceIds,
@@ -168,7 +180,7 @@ export async function upsertProject(
       lastActivity: project.lastActivity
     };
 
-    const { data, error} = await supabase
+    const { data, error} = await client
       .from('projects')
       .upsert(
         {
@@ -209,14 +221,15 @@ export async function upsertProject(
  */
 export async function syncProjects(
   projects: UnifiedProjectInfo[],
-  accountId: string | null
+  accountId: string | null,
+  accessToken: string | null
 ): Promise<Map<string, string>> {
   console.log(`\nSyncing ${projects.length} projects...`);
 
   const projectIdMap = new Map<string, string>(); // Map project path to project ID
 
   for (const project of projects) {
-    const projectId = await upsertProject(project, accountId);
+    const projectId = await upsertProject(project, accountId, accessToken);
     if (projectId) {
       projectIdMap.set(project.path, projectId);
     }
@@ -228,7 +241,8 @@ export async function syncProjects(
 
 export async function uploadAllHistories(
   histories: ChatHistory[],
-  accountId: string | null
+  accountId: string | null,
+  accessToken: string | null
 ): Promise<void> {
   console.log(`Uploading ${histories.length} chat histories...`);
 
@@ -236,7 +250,7 @@ export async function uploadAllHistories(
   let failureCount = 0;
 
   for (const history of histories) {
-    const success = await uploadChatHistory(history, accountId);
+    const success = await uploadChatHistory(history, accountId, accessToken);
     if (success) {
       successCount++;
     } else {

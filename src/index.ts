@@ -25,7 +25,13 @@ async function processHistories() {
   }
 
   const accountId = authManager.getUserId();
+  const accessToken = authManager.getAccessToken();
   console.log(`✓ Authenticated as user: ${accountId}`);
+
+  if (!accessToken) {
+    console.log('⚠️  No access token available. Skipping upload.');
+    return;
+  }
 
   // Get session lookback period from environment (default: 30 days)
   const lookbackDays = parseInt(process.env.SESSION_LOOKBACK_DAYS || '30', 10);
@@ -46,7 +52,7 @@ async function processHistories() {
   const allProjects = mergeProjects(cursorProjects, claudeCodeProjects);
 
   if (allProjects.length > 0) {
-    await syncProjects(allProjects, accountId);
+    await syncProjects(allProjects, accountId, accessToken);
   }
 
   // Combine all histories
@@ -58,7 +64,7 @@ async function processHistories() {
   }
 
   console.log(`Total: ${allHistories.length} chat histories.`);
-  await uploadAllHistories(allHistories, accountId);
+  await uploadAllHistories(allHistories, accountId, accessToken);
   console.log('Upload complete.');
 }
 
