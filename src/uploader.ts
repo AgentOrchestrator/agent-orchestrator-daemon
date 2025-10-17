@@ -9,7 +9,7 @@ import type { UnifiedProjectInfo } from './project-aggregator.js';
 async function findOrCreateProject(
   history: ChatHistory,
   accountId: string | null,
-  client: ReturnType<typeof createAuthenticatedClient>
+  client: Awaited<ReturnType<typeof createAuthenticatedClient>>
 ): Promise<string | null> {
   if (!accountId) {
     return null;
@@ -90,14 +90,15 @@ async function findOrCreateProject(
 export async function uploadChatHistory(
   history: ChatHistory,
   accountId: string | null,
-  accessToken: string | null
+  accessToken: string | null,
+  refreshToken: string | null
 ): Promise<boolean> {
-  if (!accessToken) {
-    console.error('No access token provided');
+  if (!accessToken || !refreshToken) {
+    console.error('No access token or refresh token provided');
     return false;
   }
 
-  const client = createAuthenticatedClient(accessToken);
+  const client = await createAuthenticatedClient(accessToken, refreshToken);
 
   try {
     // Calculate the latest message timestamp from the messages array
@@ -161,16 +162,17 @@ export async function uploadChatHistory(
 export async function upsertProject(
   project: UnifiedProjectInfo,
   accountId: string | null,
-  accessToken: string | null
+  accessToken: string | null,
+  refreshToken: string | null
 ): Promise<string | null> {
-  if (!accountId || !accessToken) {
+  if (!accountId || !accessToken || !refreshToken) {
     console.log(`Skipping project ${project.name} (not authenticated)`);
     return null;
   }
 
-  const client = createAuthenticatedClient(accessToken);
+  const client = await createAuthenticatedClient(accessToken, refreshToken);
 
-  try{
+  try {
     // Build workspace metadata from project info
     const workspaceMetadata = {
       workspaceIds: project.workspaceIds,
@@ -180,7 +182,7 @@ export async function upsertProject(
       lastActivity: project.lastActivity
     };
 
-    const { data, error} = await client
+    const { data, error } = await client
       .from('projects')
       .upsert(
         {
@@ -199,7 +201,8 @@ export async function upsertProject(
       .single();
 
     if (error) {
-      console.error(`Error upserting project ${project.name}:`, error);
+      console.error(`[DEBUG] Error upserting project ${project.name}:`, error);
+      console.error(`[DEBUG] Error code: ${error.code}, Details: ${error.details}, Hint: ${error.hint}`);
       return null;
     }
 
@@ -222,14 +225,15 @@ export async function upsertProject(
 export async function syncProjects(
   projects: UnifiedProjectInfo[],
   accountId: string | null,
-  accessToken: string | null
+  accessToken: string | null,
+  refreshToken: string | null
 ): Promise<Map<string, string>> {
   console.log(`\nSyncing ${projects.length} projects...`);
 
   const projectIdMap = new Map<string, string>(); // Map project path to project ID
 
   for (const project of projects) {
-    const projectId = await upsertProject(project, accountId, accessToken);
+    const projectId = await upsertProject(project, accountId, accessToken, refreshToken);
     if (projectId) {
       projectIdMap.set(project.path, projectId);
     }
@@ -242,7 +246,8 @@ export async function syncProjects(
 export async function uploadAllHistories(
   histories: ChatHistory[],
   accountId: string | null,
-  accessToken: string | null
+  accessToken: string | null,
+  refreshToken: string | null
 ): Promise<void> {
   console.log(`Uploading ${histories.length} chat histories...`);
 
@@ -250,7 +255,7 @@ export async function uploadAllHistories(
   let failureCount = 0;
 
   for (const history of histories) {
-    const success = await uploadChatHistory(history, accountId, accessToken);
+    const success = await uploadChatHistory(history, accountId, accessToken, refreshToken);
     if (success) {
       successCount++;
     } else {

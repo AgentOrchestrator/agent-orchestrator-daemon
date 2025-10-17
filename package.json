@@ -20,6 +20,7 @@
     "better-sqlite3": "^12.4.1",
     "dotenv": "^17.2.3",
     "openai": "^6.3.0",
+    "supabase": "^2.51.0",
     "uuid": "^13.0.0"
   },
   "devDependencies": {

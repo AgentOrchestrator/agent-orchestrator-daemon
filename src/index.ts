@@ -26,10 +26,11 @@ async function processHistories() {
 
   const accountId = authManager.getUserId();
   const accessToken = authManager.getAccessToken();
+  const refreshToken = authManager.getRefreshToken();
   console.log(`✓ Authenticated as user: ${accountId}`);
 
-  if (!accessToken) {
-    console.log('⚠️  No access token available. Skipping upload.');
+  if (!accessToken || !refreshToken) {
+    console.log('⚠️  No access token or refresh token available. Skipping upload.');
     return;
   }
 
@@ -52,7 +53,7 @@ async function processHistories() {
   const allProjects = mergeProjects(cursorProjects, claudeCodeProjects);
 
   if (allProjects.length > 0) {
-    await syncProjects(allProjects, accountId, accessToken);
+    await syncProjects(allProjects, accountId, accessToken, refreshToken);
   }
 
   // Combine all histories
@@ -64,7 +65,7 @@ async function processHistories() {
   }
 
   console.log(`Total: ${allHistories.length} chat histories.`);
-  await uploadAllHistories(allHistories, accountId, accessToken);
+  await uploadAllHistories(allHistories, accountId, accessToken, refreshToken);
   console.log('Upload complete.');
 }
 

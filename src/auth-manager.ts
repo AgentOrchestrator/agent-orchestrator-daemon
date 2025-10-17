@@ -128,6 +128,10 @@ export class AuthManager {
     return this.authState?.accessToken || null;
   }
 
+  getRefreshToken(): string | null {
+    return this.authState?.refreshToken || null;
+  }
+
   getDeviceId(): string {
     return this.deviceId;
   }
