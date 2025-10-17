@@ -103,16 +103,19 @@ async function main() {
   // Note: These will automatically use fallback mode if OPENAI_API_KEY is not set
   console.log('Starting AI summary, keyword, and title updaters (run every 5 minutes)...');
 
-  // Run immediately on startup
-  await runPeriodicSummaryUpdate();
-  await runPeriodicKeywordUpdate();
-  await runPeriodicTitleUpdate();
+  // Run immediately on startup (only for authenticated user's sessions)
+  const userId = authManager.getUserId();
+  await runPeriodicSummaryUpdate(userId);
+  await runPeriodicKeywordUpdate(userId);
+  await runPeriodicTitleUpdate(userId);
 
   // Then run every 5 minutes
   setInterval(async () => {
-    await runPeriodicSummaryUpdate();
-    await runPeriodicKeywordUpdate();
-    await runPeriodicTitleUpdate();
+    // Get current user ID in case it changed (e.g., re-authentication)
+    const currentUserId = authManager.getUserId();
+    await runPeriodicSummaryUpdate(currentUserId);
+    await runPeriodicKeywordUpdate(currentUserId);
+    await runPeriodicTitleUpdate(currentUserId);
   }, 5 * 60 * 1000); // 5 minutes
 
   console.log('Daemon is running. Press Ctrl+C to stop.');
