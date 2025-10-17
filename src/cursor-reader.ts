@@ -375,7 +375,7 @@ function getWorkspaceInfo(workspaceDir: string): WorkspaceInfo | null {
 /**
  * Read Copilot sessions from workspace databases
  */
-function readCopilotSessions(): CursorConversation[] {
+function readCopilotSessions(cutoffDate: Date | null = null): CursorConversation[] {
   const conversations: CursorConversation[] = [];
   const workspaceStoragePath = getCursorWorkspaceStoragePath();
 
@@ -512,6 +512,15 @@ function readCopilotSessions(): CursorConversation[] {
 
               if (projectPath) {
                 metadata.projectPath = projectPath;
+              }
+
+              // Apply lookback filter if specified
+              if (cutoffDate) {
+                const convDate = new Date(lastMessage.timestamp);
+                if (convDate < cutoffDate) {
+                  // Skip conversations outside lookback period
+                  continue;
+                }
               }
 
               conversations.push({
@@ -751,8 +760,16 @@ function buildWorkspaceMap(): Map<string, WorkspaceInfo> {
 /**
  * Read all Cursor chat histories from the SQLite database
  */
-export function readCursorHistories(): CursorConversation[] {
+export function readCursorHistories(lookbackDays?: number): CursorConversation[] {
   const conversations: CursorConversation[] = [];
+
+  // Calculate cutoff date if lookback is specified
+  let cutoffDate: Date | null = null;
+  if (lookbackDays && lookbackDays > 0) {
+    cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - lookbackDays);
+    console.log(`[Cursor Reader] Filtering conversations after ${cutoffDate.toISOString()}`);
+  }
 
   try {
     const dbPath = getCursorStatePath();
@@ -928,6 +945,15 @@ export function readCursorHistories(): CursorConversation[] {
           metadata.conversationName = projectInfo.conversationName;
         }
 
+        // Apply lookback filter if specified
+        if (cutoffDate) {
+          const convDate = new Date(conversationTimestamp);
+          if (convDate < cutoffDate) {
+            // Skip conversations outside lookback period
+            continue;
+          }
+        }
+
         conversations.push({
           id: composerId,
           timestamp: conversationTimestamp,
@@ -961,7 +987,7 @@ export function readCursorHistories(): CursorConversation[] {
 
   // Read Copilot sessions from workspace databases
   try {
-    const copilotConversations = readCopilotSessions();
+    const copilotConversations = readCopilotSessions(cutoffDate);
     conversations.push(...copilotConversations);
   } catch (error) {
     console.error('[Cursor] Error reading Copilot sessions:', error);
