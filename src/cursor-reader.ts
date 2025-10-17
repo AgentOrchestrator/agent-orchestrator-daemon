@@ -3,6 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
 import { createHash } from 'crypto';
+import type { SessionMetadata } from './types.js';
 
 export interface CursorMessage {
   id: string;
@@ -20,15 +21,7 @@ export interface CursorConversation {
   timestamp: string;
   messages: CursorMessage[];
   conversationType: 'composer' | 'copilot';
-  metadata?: {
-    workspace?: string | undefined;
-    workspaceId?: string | undefined;
-    projectName?: string | undefined;
-    projectPath?: string | undefined;
-    conversationName?: string | undefined;
-    source: 'cursor-composer' | 'cursor-copilot';
-    [key: string]: any;
-  } | undefined;
+  metadata?: SessionMetadata;
 }
 
 export interface ProjectInfo {
@@ -177,17 +170,99 @@ function normalizeTimestamp(timestamp: string | number | undefined): string {
 }
 
 /**
- * Extract project information from composer data
+ * Extract project name from a folder or file path
+ * Handles both local and remote paths, extracting the project directory name
+ *
+ * Strategy:
+ * 1. Clean up URI schemes (file://, vscode-remote://)
+ * 2. Find common project root indicators (Developer, projects, home, etc.)
+ * 3. Extract the directory name after the root indicator
+ * 4. Fallback: Use the last directory segment (not filename)
  */
-function extractProjectInfo(composerData: ComposerData): {
+function extractProjectNameFromPath(folderPath: string): string | undefined {
+  // Remove URI scheme if present (file://, vscode-remote://, etc.)
+  let cleanPath = folderPath;
+
+  // Handle file:// URIs
+  if (cleanPath.startsWith('file://')) {
+    cleanPath = cleanPath.replace('file://', '');
+  }
+
+  // Handle vscode-remote URIs (e.g., vscode-remote://ssh-remote%2Bserver/path)
+  if (cleanPath.startsWith('vscode-remote://')) {
+    const match = cleanPath.match(/vscode-remote:\/\/[^/]+(.+)/);
+    if (match && match[1]) {
+      cleanPath = match[1];
+    }
+  }
+
+  // Decode URL encoding (e.g., %2B -> +)
+  try {
+    cleanPath = decodeURIComponent(cleanPath);
+  } catch (e) {
+    // If decoding fails, use as-is
+  }
+
+  // Split by / and filter empty segments
+  const parts = cleanPath.split('/').filter(p => p.trim() !== '');
+  if (parts.length === 0) {
+    return undefined;
+  }
+
+  // Common project root indicators (in priority order)
+  const rootIndicators = ['Developer', 'projects', 'workspace', 'repos', 'code', 'work'];
+
+  // Try to find a root indicator and get the directory after it
+  for (const indicator of rootIndicators) {
+    const index = parts.indexOf(indicator);
+    if (index >= 0 && index + 1 < parts.length) {
+      // Return the first directory after the root indicator
+      // This should be the project name
+      return parts[index + 1];
+    }
+  }
+
+  // Special case for 'home' - skip username and get the next directory
+  // e.g., /home/username/project -> project
+  const homeIndex = parts.indexOf('home');
+  if (homeIndex >= 0 && homeIndex + 2 < parts.length) {
+    return parts[homeIndex + 2]; // Skip 'home' and username
+  }
+
+  // Fallback: Assume the path might be pointing to a file
+  // Go up until we find what looks like a project root
+  // Skip the last part if it looks like a filename (has extension)
+  const lastPart = parts[parts.length - 1];
+  if (!lastPart) {
+    return undefined;
+  }
+
+  const hasExtension = lastPart.includes('.');
+
+  if (hasExtension && parts.length > 1) {
+    // It's likely a file, use the parent directory
+    return parts[parts.length - 2];
+  }
+
+  // Otherwise use the last segment (it's likely a directory)
+  return lastPart;
+}
+
+/**
+ * Extract project information from composer data
+ * Uses workspace ID to look up the actual workspace folder from workspace storage
+ */
+function extractProjectInfo(composerData: ComposerData, workspaceMap: Map<string, WorkspaceInfo>): {
   projectName?: string | undefined;
   projectPath?: string | undefined;
   conversationName?: string | undefined;
+  workspaceId?: string | undefined;
 } {
   const result: {
     projectName?: string | undefined;
     projectPath?: string | undefined;
     conversationName?: string | undefined;
+    workspaceId?: string | undefined;
   } = {};
 
   // Get conversation name if available
@@ -195,19 +270,30 @@ function extractProjectInfo(composerData: ComposerData): {
     result.conversationName = composerData.name;
   }
 
-  // Try to extract project from file selections in context
+  // PREFERRED: Look up workspace info from workspace storage using workspace ID
+  if (composerData.workspace) {
+    const workspaceInfo = workspaceMap.get(composerData.workspace);
+    if (workspaceInfo?.folder) {
+      result.workspaceId = workspaceInfo.workspaceId;
+      result.projectPath = workspaceInfo.folder; // Keep full path from workspace.json
+      result.projectName = extractProjectNameFromPath(workspaceInfo.folder);
+
+      if (result.projectName && result.projectPath) {
+        return result; // Found reliable workspace info, return early
+      }
+    }
+  }
+
+  // FALLBACK: Try to extract project from file selections in context
+  // This is less reliable but better than nothing
   const context = composerData.context;
   if (context?.fileSelections && Array.isArray(context.fileSelections)) {
     for (const selection of context.fileSelections) {
       if (selection.uri?.fsPath) {
-        const path = selection.uri.fsPath;
-        const parts = path.split('/');
-        const devIndex = parts.indexOf('Developer');
-
-        if (devIndex >= 0 && devIndex + 1 < parts.length) {
-          result.projectName = parts[devIndex + 1];
-          result.projectPath = parts.slice(0, devIndex + 2).join('/');
-          break; // Use first valid project path found
+        result.projectPath = selection.uri.fsPath;
+        result.projectName = extractProjectNameFromPath(selection.uri.fsPath);
+        if (result.projectName) {
+          break; // Use first valid project found
         }
       }
     }
@@ -217,13 +303,9 @@ function extractProjectInfo(composerData: ComposerData): {
   if (!result.projectName && context?.folderSelections && Array.isArray(context.folderSelections)) {
     for (const selection of context.folderSelections) {
       if (selection.uri?.fsPath) {
-        const path = selection.uri.fsPath;
-        const parts = path.split('/');
-        const devIndex = parts.indexOf('Developer');
-
-        if (devIndex >= 0 && devIndex + 1 < parts.length) {
-          result.projectName = parts[devIndex + 1];
-          result.projectPath = parts.slice(0, devIndex + 2).join('/');
+        result.projectPath = selection.uri.fsPath;
+        result.projectName = extractProjectNameFromPath(selection.uri.fsPath);
+        if (result.projectName) {
           break;
         }
       }
@@ -404,22 +486,32 @@ function readCopilotSessions(): CursorConversation[] {
               totalSessions++;
 
               // Extract project info from workspace folder
-              let projectName: string | undefined;
-              let projectPath: string | undefined;
-
-              if (workspaceInfo.folder) {
-                const parts = workspaceInfo.folder.split('/');
-                const devIndex = parts.indexOf('Developer');
-
-                if (devIndex >= 0 && devIndex + 1 < parts.length) {
-                  projectName = parts[devIndex + 1];
-                  projectPath = parts.slice(0, devIndex + 2).join('/');
-                }
-              }
+              const projectPath = workspaceInfo.folder;
+              const projectName = workspaceInfo.folder
+                ? extractProjectNameFromPath(workspaceInfo.folder)
+                : undefined;
 
               const lastMessage = messages[messages.length - 1];
               if (!lastMessage) {
                 continue;
+              }
+
+              // Build metadata with only defined values
+              const metadata: SessionMetadata = {
+                workspaceId: workspaceInfo.workspaceId,
+                source: 'cursor-copilot'
+              };
+
+              if (workspaceInfo.folder) {
+                metadata.workspace = workspaceInfo.folder;
+              }
+
+              if (projectName) {
+                metadata.projectName = projectName;
+              }
+
+              if (projectPath) {
+                metadata.projectPath = projectPath;
               }
 
               conversations.push({
@@ -427,13 +519,7 @@ function readCopilotSessions(): CursorConversation[] {
                 timestamp: lastMessage.timestamp,
                 messages,
                 conversationType: 'copilot',
-                metadata: {
-                  workspaceId: workspaceInfo.workspaceId,
-                  workspace: workspaceInfo.folder,
-                  projectName,
-                  projectPath,
-                  source: 'cursor-copilot'
-                }
+                metadata
               });
             }
 
@@ -459,6 +545,7 @@ function readCopilotSessions(): CursorConversation[] {
 
 /**
  * Extract project information from all conversations
+ * Groups sessions by project path (most unique identifier)
  */
 export function extractProjectsFromConversations(
   conversations: CursorConversation[]
@@ -631,6 +718,37 @@ function readComposersFromCursorDiskKV(db: Database.Database): Map<string, Compo
 }
 
 /**
+ * Build a map of all workspace IDs to their workspace info
+ */
+function buildWorkspaceMap(): Map<string, WorkspaceInfo> {
+  const workspaceMap = new Map<string, WorkspaceInfo>();
+  const workspaceStoragePath = getCursorWorkspaceStoragePath();
+
+  if (!fs.existsSync(workspaceStoragePath)) {
+    return workspaceMap;
+  }
+
+  try {
+    const workspaceDirs = fs.readdirSync(workspaceStoragePath)
+      .map(name => path.join(workspaceStoragePath, name))
+      .filter(p => fs.statSync(p).isDirectory());
+
+    for (const workspaceDir of workspaceDirs) {
+      const workspaceInfo = getWorkspaceInfo(workspaceDir);
+      if (workspaceInfo && workspaceInfo.workspaceId) {
+        workspaceMap.set(workspaceInfo.workspaceId, workspaceInfo);
+      }
+    }
+
+    console.log(`[Cursor] Built workspace map with ${workspaceMap.size} workspaces`);
+  } catch (error) {
+    console.error('[Cursor] Error building workspace map:', error);
+  }
+
+  return workspaceMap;
+}
+
+/**
  * Read all Cursor chat histories from the SQLite database
  */
 export function readCursorHistories(): CursorConversation[] {
@@ -645,6 +763,9 @@ export function readCursorHistories(): CursorConversation[] {
     }
 
     console.log('[Cursor] Reading Cursor chat histories...');
+
+    // Build workspace map for reliable project path lookup
+    const workspaceMap = buildWorkspaceMap();
 
     // Open database in read-only mode
     const db = new Database(dbPath, { readonly: true });
@@ -773,8 +894,8 @@ export function readCursorHistories(): CursorConversation[] {
 
         totalMessagesExtracted += messages.length;
 
-        // Extract project information
-        const projectInfo = extractProjectInfo(composerData);
+        // Extract project information using workspace map for reliable project names
+        const projectInfo = extractProjectInfo(composerData, workspaceMap);
 
         // Use lastUpdatedAt for the conversation timestamp (when the last message was added)
         // Fall back to createdAt if lastUpdatedAt is not available
@@ -782,18 +903,37 @@ export function readCursorHistories(): CursorConversation[] {
           composerData.lastUpdatedAt || composerData.createdAt
         );
 
+        // Build metadata with only defined values
+        const metadata: SessionMetadata = {
+          source: 'cursor-composer'
+        };
+
+        if (composerData.workspace) {
+          metadata.workspace = composerData.workspace;
+        }
+
+        if (projectInfo.workspaceId) {
+          metadata.workspaceId = projectInfo.workspaceId;
+        }
+
+        if (projectInfo.projectName) {
+          metadata.projectName = projectInfo.projectName;
+        }
+
+        if (projectInfo.projectPath) {
+          metadata.projectPath = projectInfo.projectPath;
+        }
+
+        if (projectInfo.conversationName) {
+          metadata.conversationName = projectInfo.conversationName;
+        }
+
         conversations.push({
           id: composerId,
           timestamp: conversationTimestamp,
           messages,
           conversationType: 'composer',
-          metadata: {
-            workspace: composerData.workspace,
-            projectName: projectInfo.projectName,
-            projectPath: projectInfo.projectPath,
-            conversationName: projectInfo.conversationName,
-            source: 'cursor-composer'
-          }
+          metadata
         });
       }
 

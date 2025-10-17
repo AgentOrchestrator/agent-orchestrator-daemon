@@ -1,25 +1,10 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import type { ChatMessage, ChatHistory, SessionMetadata } from './types.js';
 
-export interface ChatMessage {
-  display: string;
-  pastedContents: Record<string, any>;
-  role?: 'user' | 'assistant';
-  timestamp?: string;
-}
-
-export interface ChatHistory {
-  id: string;
-  timestamp: string;
-  messages: ChatMessage[];
-  agent_type: 'claude_code' | 'codex' | 'cursor' | 'windsurf' | 'other';
-  metadata?: {
-    projectPath?: string;
-    allowedTools?: string[];
-    [key: string]: any;
-  };
-}
+// Re-export types for backward compatibility
+export type { ChatMessage, ChatHistory, SessionMetadata } from './types.js';
 
 export interface ProjectInfo {
   name: string;
@@ -156,15 +141,28 @@ function parseSessionFile(filePath: string, projectPath: string): ChatHistory | 
       }
     }
 
+    // Extract project name from path
+    const projectName = projectPath ? path.basename(projectPath) : undefined;
+
+    const metadata: SessionMetadata = {
+      projectPath,
+      source: 'claude_code'
+    };
+
+    if (projectName) {
+      metadata.projectName = projectName;
+    }
+
+    if (summary) {
+      metadata.summary = summary;
+    }
+
     return {
       id: sessionId,
       timestamp: lastTimestamp || firstTimestamp || new Date().toISOString(),
       messages,
       agent_type: 'claude_code',
-      metadata: {
-        projectPath,
-        summary: summary || undefined
-      }
+      metadata
     };
   } catch (error) {
     console.error(`Error parsing session file ${filePath}:`, error);

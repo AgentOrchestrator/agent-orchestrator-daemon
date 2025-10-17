@@ -2,6 +2,90 @@ import { supabase } from './supabase.js';
 import type { ChatHistory } from './claude-code-reader.js';
 import type { UnifiedProjectInfo } from './project-aggregator.js';
 
+/**
+ * Find or create a project for a session based on metadata
+ * Returns project_id or null if not authenticated
+ */
+async function findOrCreateProject(
+  history: ChatHistory,
+  accountId: string | null
+): Promise<string | null> {
+  if (!accountId) {
+    return null;
+  }
+
+  const projectName = history.metadata?.projectName;
+
+  // If no project name in metadata, link to default "Uncategorized" project
+  if (!projectName) {
+    // Try to find existing default project
+    const { data: existingDefault } = await supabase
+      .from('projects')
+      .select('id')
+      .eq('user_id', accountId)
+      .eq('is_default', true)
+      .maybeSingle();
+
+    if (existingDefault) {
+      return existingDefault.id;
+    }
+
+    // Default project doesn't exist, create it
+    const { data: newDefault, error: createError } = await supabase
+      .from('projects')
+      .insert({
+        user_id: accountId,
+        name: 'Uncategorized',
+        project_path: null,
+        description: 'Default project for sessions without project information',
+        is_default: true
+      })
+      .select('id')
+      .single();
+
+    if (createError) {
+      console.error('Error creating default project:', createError);
+      return null;
+    }
+
+    console.log('  → Created default "Uncategorized" project');
+    return newDefault.id;
+  }
+
+  // Find or create project with this name
+  const { data: existingProject } = await supabase
+    .from('projects')
+    .select('id')
+    .eq('user_id', accountId)
+    .eq('name', projectName)
+    .maybeSingle();
+
+  if (existingProject) {
+    return existingProject.id;
+  }
+
+  // Project doesn't exist, create it
+  const { data: newProject, error: createError } = await supabase
+    .from('projects')
+    .insert({
+      user_id: accountId,
+      name: projectName,
+      project_path: history.metadata?.projectPath || null,
+      description: `Auto-created from ${history.agent_type} session`,
+      is_default: false
+    })
+    .select('id')
+    .single();
+
+  if (createError) {
+    console.error(`Error creating project ${projectName}:`, createError);
+    return null;
+  }
+
+  console.log(`  → Created new project: ${projectName}`);
+  return newProject.id;
+}
+
 export async function uploadChatHistory(
   history: ChatHistory,
   accountId: string | null
@@ -20,7 +104,10 @@ export async function uploadChatHistory(
       latestMessageTimestamp = timestamps[0] || null;
     }
 
-    // Upsert based on project ID (which is deterministic based on project path)
+    // Find or create project for this session
+    const projectId = await findOrCreateProject(history, accountId);
+
+    // Upsert based on session ID
     // This allows us to update existing records when re-running the uploader
     const { error } = await supabase
       .from('chat_histories')
@@ -32,6 +119,7 @@ export async function uploadChatHistory(
           metadata: history.metadata,
           agent_type: history.agent_type,
           account_id: accountId,
+          project_id: projectId,
           latest_message_timestamp: latestMessageTimestamp,
           updated_at: new Date().toISOString()
         },
@@ -47,10 +135,10 @@ export async function uploadChatHistory(
       return false;
     }
 
-    const projectPath = history.metadata?.projectPath || 'unknown';
+    const projectName = history.metadata?.projectName || 'Uncategorized';
     const messageCount = history.messages.length;
     const authStatus = accountId ? '🔐' : '🔓';
-    console.log(`✓ ${authStatus} Uploaded: ${projectPath} (${messageCount} messages)`);
+    console.log(`✓ ${authStatus} ${projectName} (${messageCount} messages)`);
     return true;
   } catch (error) {
     console.error(`Failed to upload chat history ${history.id}:`, error);
@@ -80,7 +168,7 @@ export async function upsertProject(
       lastActivity: project.lastActivity
     };
 
-    const { data, error } = await supabase
+    const { data, error} = await supabase
       .from('projects')
       .upsert(
         {
@@ -91,7 +179,7 @@ export async function upsertProject(
           updated_at: new Date().toISOString()
         },
         {
-          onConflict: 'user_id,project_path',
+          onConflict: 'user_id,name',
           ignoreDuplicates: false
         }
       )
