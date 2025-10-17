@@ -339,8 +339,8 @@ export async function getSessionsNeedingSummaryUpdate(
   const { data, error } = await supabase
     .from('chat_histories')
     .select('*')
-    .gte('created_at', cutoffTime.toISOString())
-    .order('created_at', { ascending: false });
+    .gte('latest_message_timestamp', cutoffTime.toISOString())
+    .order('latest_message_timestamp', { ascending: false });
 
   if (error) {
     console.error('Error fetching sessions for summary update:', error);
