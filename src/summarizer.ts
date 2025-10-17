@@ -335,6 +335,9 @@ export async function getSessionsNeedingSummaryUpdate(
   const cutoffTime = new Date();
   cutoffTime.setHours(cutoffTime.getHours() - withinHours);
 
+  console.log(`[Summary Updater] Fetching sessions needing summary update...`);
+  console.log(`[Summary Updater] Cutoff time: ${cutoffTime.toISOString()}`);
+
   // Fetch recent sessions
   const { data, error } = await supabase
     .from('chat_histories')
