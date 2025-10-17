@@ -7,6 +7,26 @@ import { mergeProjects } from './project-aggregator.js';
 
 let authManager: AuthManager;
 
+/**
+ * Filter histories to only include sessions within the lookback period
+ */
+function filterHistoriesByLookback<T extends { timestamp: string }>(
+  histories: T[],
+  lookbackDays: number
+): T[] {
+  if (lookbackDays <= 0) {
+    return histories; // No filtering if lookback is 0 or negative
+  }
+
+  const cutoffDate = new Date();
+  cutoffDate.setDate(cutoffDate.getDate() - lookbackDays);
+
+  return histories.filter(history => {
+    const sessionDate = new Date(history.timestamp);
+    return sessionDate >= cutoffDate;
+  });
+}
+
 async function processHistories() {
   console.log('Processing chat histories...');
 
@@ -27,14 +47,20 @@ async function processHistories() {
   const accountId = authManager.getUserId();
   console.log(`✓ Authenticated as user: ${accountId}`);
 
+  // Get session lookback period from environment (default: 30 days)
+  const lookbackDays = parseInt(process.env.SESSION_LOOKBACK_DAYS || '30', 10);
+  console.log(`Using session lookback period: ${lookbackDays} days`);
+
   // Read Claude Code histories
-  const claudeHistories = readChatHistories();
-  console.log(`Found ${claudeHistories.length} Claude Code chat histories.`);
+  const allClaudeHistories = readChatHistories();
+  const claudeHistories = filterHistoriesByLookback(allClaudeHistories, lookbackDays);
+  console.log(`Found ${claudeHistories.length} Claude Code chat histories (filtered from ${allClaudeHistories.length} total).`);
 
   // Read Cursor histories
   const cursorConversations = readCursorHistories();
-  const cursorHistories = convertCursorToStandardFormat(cursorConversations);
-  console.log(`Found ${cursorHistories.length} Cursor chat histories.`);
+  const allCursorHistories = convertCursorToStandardFormat(cursorConversations);
+  const cursorHistories = filterHistoriesByLookback(allCursorHistories, lookbackDays);
+  console.log(`Found ${cursorHistories.length} Cursor chat histories (filtered from ${allCursorHistories.length} total).`);
 
   // Extract and merge projects from both Claude Code and Cursor
   const claudeCodeProjects = extractProjectsFromClaudeCodeHistories(claudeHistories);
