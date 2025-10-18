@@ -148,7 +148,35 @@ export async function uploadChatHistory(
     const projectName = history.metadata?.projectName || 'Uncategorized';
     const messageCount = history.messages.length;
     const authStatus = accountId ? '🔐' : '🔓';
-    console.log(`✓ ${authStatus} ${projectName} (${messageCount} messages)`);
+
+    // Format agent type for display
+    let agentLabel = '';
+    if (history.agent_type === 'claude_code') {
+      agentLabel = '[Claude Code]';
+    } else if (history.agent_type === 'cursor') {
+      const source = history.metadata?.source;
+      if (source === 'cursor-composer') {
+        agentLabel = '[Cursor Composer]';
+      } else if (source === 'cursor-copilot') {
+        agentLabel = '[Cursor Copilot]';
+      } else {
+        agentLabel = '[Cursor]';
+      }
+    }
+
+    // Format latest message timestamp (in UTC to match database)
+    const timeDisplay = latestMessageTimestamp
+      ? new Date(latestMessageTimestamp).toLocaleString('en-US', {
+          month: 'short',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit',
+          timeZone: 'UTC',
+          timeZoneName: 'short'
+        })
+      : 'unknown time';
+
+    console.log(`✓ ${authStatus} ${agentLabel} ${projectName} (${messageCount} msgs, latest: ${timeDisplay})`);
     return true;
   } catch (error) {
     console.error(`Failed to upload chat history ${history.id}:`, error);

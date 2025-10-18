@@ -3,6 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
 import { createHash } from 'crypto';
+import { createAuthenticatedClient } from './supabase.js';
 import type { SessionMetadata } from './types.js';
 
 export interface CursorMessage {
@@ -100,6 +101,87 @@ function getCursorStatePath(): string {
     'globalStorage',
     'state.vscdb'
   );
+}
+
+// Authenticated Supabase client for database lookups
+// Initialized with user session when readCursorHistories is called
+let authenticatedClient: Awaited<ReturnType<typeof createAuthenticatedClient>> | null = null;
+
+/**
+ * Initialize authenticated Supabase client
+ * Must be called before fetching sessions from database
+ */
+async function initializeAuthenticatedClient(accessToken: string, refreshToken: string): Promise<void> {
+  try {
+    authenticatedClient = await createAuthenticatedClient(accessToken, refreshToken);
+  } catch (error) {
+    console.warn('[Cursor Reader] Could not initialize authenticated Supabase client:', error);
+    authenticatedClient = null;
+  }
+}
+
+/**
+ * Get the modification time of the state.vscdb file
+ * Returns ISO timestamp or current time if file cannot be read
+ */
+async function getStateDbModificationTime(): Promise<string> {
+  const statePath = getCursorStatePath();
+  try {
+    const stats = await fs.promises.stat(statePath);
+    return stats.mtime.toISOString();
+  } catch (error) {
+    console.warn('[Cursor Reader] Could not read state.vscdb modification time:', error);
+    return new Date().toISOString();
+  }
+}
+
+/**
+ * Fetch an existing session from the database by ID
+ * Returns null if session not found or database unavailable
+ */
+async function fetchExistingSession(sessionId: string): Promise<{ id: string; messages: any[]; timestamp: string; latest_message_timestamp: string | null } | null> {
+  if (!authenticatedClient) {
+    return null;
+  }
+
+  try {
+    const { data, error } = await authenticatedClient
+      .from('chat_histories')
+      .select('id, messages, timestamp, latest_message_timestamp')
+      .eq('id', sessionId)
+      .single();
+
+    if (error || !data) {
+      return null;
+    }
+
+    return data;
+  } catch (error) {
+    console.warn(`[Cursor Reader] Error fetching session ${sessionId}:`, error);
+    return null;
+  }
+}
+
+/**
+ * Detect if new messages have been added to a conversation
+ * Returns information about new messages
+ */
+function detectNewMessages(
+  existingSession: { id: string; messages: any[]; timestamp: string; latest_message_timestamp: string | null } | null,
+  newMessages: CursorMessage[]
+): { hasNewMessages: boolean; newMessageStartIndex: number } {
+  if (!existingSession || !existingSession.messages) {
+    return { hasNewMessages: false, newMessageStartIndex: 0 };
+  }
+
+  const existingCount = existingSession.messages.length;
+  const newCount = newMessages.length;
+
+  if (newCount > existingCount) {
+    return { hasNewMessages: true, newMessageStartIndex: existingCount };
+  }
+
+  return { hasNewMessages: false, newMessageStartIndex: 0 };
 }
 
 /**
@@ -375,7 +457,7 @@ function getWorkspaceInfo(workspaceDir: string): WorkspaceInfo | null {
 /**
  * Read Copilot sessions from workspace databases
  */
-function readCopilotSessions(cutoffDate: Date | null = null): CursorConversation[] {
+async function readCopilotSessions(cutoffDate: Date | null = null): Promise<CursorConversation[]> {
   const conversations: CursorConversation[] = [];
   const workspaceStoragePath = getCursorWorkspaceStoragePath();
 
@@ -388,9 +470,10 @@ function readCopilotSessions(cutoffDate: Date | null = null): CursorConversation
     .map(name => path.join(workspaceStoragePath, name))
     .filter(p => fs.statSync(p).isDirectory());
 
-  console.log(`[Cursor] Scanning ${workspaceDirs.length} workspace directories for Copilot sessions...`);
+  console.log(`[Cursor Copilot] Scanning ${workspaceDirs.length} workspace-specific databases...`);
 
   let totalSessions = 0;
+  let copilotHeuristicTimestampsApplied = 0;
 
   for (const workspaceDir of workspaceDirs) {
     const dbPath = path.join(workspaceDir, 'state.vscdb');
@@ -483,6 +566,52 @@ function readCopilotSessions(cutoffDate: Date | null = null): CursorConversation
                 continue;
               }
 
+              // Apply heuristic timestamp for new messages (only if authenticated client available)
+              if (authenticatedClient) {
+                try {
+                  // Check if this session exists in the database and if new messages were added
+                  const existingSession = await fetchExistingSession(sessionId);
+                  const { hasNewMessages, newMessageStartIndex } = detectNewMessages(existingSession, messages);
+
+                  if (hasNewMessages || !existingSession) {
+                    // Get workspace state.vscdb modification time
+                    const workspaceDbStats = await fs.promises.stat(dbPath);
+                    const workspaceDbModTime = workspaceDbStats.mtime.toISOString();
+
+                    if (!existingSession) {
+                      // First time reading this session - use workspace DB mtime for ALL messages
+                      console.log(`[Cursor Reader] 🕐 New session detected - applying heuristic timestamp to all ${messages.length} message(s) in copilot session ${sessionId.substring(0, 8)}...`);
+                      console.log(`[Cursor Reader]   Heuristic timestamp: ${workspaceDbModTime}`);
+
+                      for (const message of messages) {
+                        if (message) {
+                          message.timestamp = workspaceDbModTime;
+                        }
+                      }
+                      copilotHeuristicTimestampsApplied++;
+                    } else if (hasNewMessages) {
+                      // Session exists - only update new messages
+                      const newMessageCount = messages.length - newMessageStartIndex;
+                      console.log(`[Cursor Reader] 🕐 Applying heuristic timestamp to ${newMessageCount} new message(s) in copilot session ${sessionId.substring(0, 8)}...`);
+                      console.log(`[Cursor Reader]   Existing: ${existingSession?.messages?.length || 0} messages, Current: ${messages.length} messages`);
+                      console.log(`[Cursor Reader]   Heuristic timestamp: ${workspaceDbModTime}`);
+
+                      // Apply heuristic timestamp only to new messages
+                      for (let i = newMessageStartIndex; i < messages.length; i++) {
+                        const message = messages[i];
+                        if (message) {
+                          message.timestamp = workspaceDbModTime;
+                        }
+                      }
+                      copilotHeuristicTimestampsApplied++;
+                    }
+                  }
+                } catch (error) {
+                  // Don't let heuristic timestamp errors stop the whole import
+                  console.warn(`[Cursor Reader] Error applying heuristic timestamp to copilot session ${sessionId.substring(0, 8)}:`, error);
+                }
+              }
+
               totalSessions++;
 
               // Extract project info from workspace folder
@@ -547,7 +676,10 @@ function readCopilotSessions(cutoffDate: Date | null = null): CursorConversation
     }
   }
 
-  console.log(`[Cursor] Found ${totalSessions} Copilot sessions`);
+  console.log(`[Cursor Copilot] ✓ Found ${totalSessions} copilot sessions`);
+  if (copilotHeuristicTimestampsApplied > 0) {
+    console.log(`[Cursor Copilot] 🕐 Applied heuristic timestamps to ${copilotHeuristicTimestampsApplied} session(s) with new messages`);
+  }
 
   return conversations;
 }
@@ -759,9 +891,25 @@ function buildWorkspaceMap(): Map<string, WorkspaceInfo> {
 
 /**
  * Read all Cursor chat histories from the SQLite database
+ *
+ * @param lookbackDays - Optional number of days to look back for conversations
+ * @param accessToken - Optional access token for authenticated database lookups (enables heuristic timestamps)
+ * @param refreshToken - Optional refresh token for authenticated database lookups
  */
-export function readCursorHistories(lookbackDays?: number): CursorConversation[] {
+export async function readCursorHistories(
+  lookbackDays?: number,
+  accessToken?: string,
+  refreshToken?: string
+): Promise<CursorConversation[]> {
   const conversations: CursorConversation[] = [];
+
+  // Initialize authenticated client if tokens provided
+  if (accessToken && refreshToken) {
+    await initializeAuthenticatedClient(accessToken, refreshToken);
+    console.log('[Cursor Reader] Authenticated client initialized for heuristic timestamps');
+  } else {
+    console.log('[Cursor Reader] No auth tokens provided - heuristic timestamps disabled');
+  }
 
   // Calculate cutoff date if lookback is specified
   let cutoffDate: Date | null = null;
@@ -841,8 +989,33 @@ export function readCursorHistories(lookbackDays?: number): CursorConversation[]
       let conversationsFromConversationArray = 0;
       let conversationsFromBubbleEntries = 0;
       let totalMessagesExtracted = 0;
+      let composerHeuristicTimestampsApplied = 0;
+      let processedCount = 0;
+      let skippedByDate = 0;
+      const totalComposers = composers.size;
+
+      console.log(`[Cursor] Processing ${totalComposers} composers...`);
 
       for (const [composerId, composerData] of composers) {
+        processedCount++;
+
+        // Apply lookback filter early to skip old conversations
+        if (cutoffDate) {
+          const conversationTimestamp = normalizeTimestamp(
+            composerData.lastUpdatedAt || composerData.createdAt
+          );
+          const convDate = new Date(conversationTimestamp);
+          if (convDate < cutoffDate) {
+            // Skip conversations outside lookback period
+            skippedByDate++;
+            continue;
+          }
+        }
+
+        // Log progress every 100 composers
+        if (processedCount % 100 === 0) {
+          console.log(`[Cursor] Progress: ${processedCount}/${totalComposers} composers processed (filtered by date)...`);
+        }
         let bubbles: BubbleData[] = [];
 
         // First, check if messages are stored in the 'conversation' array
@@ -904,6 +1077,52 @@ export function readCursorHistories(lookbackDays?: number): CursorConversation[]
           });
         }
 
+        // Apply heuristic timestamp for new messages (only if authenticated client available)
+        if (authenticatedClient) {
+          try {
+            // Check if this session exists in the database and if new messages were added
+            const existingSession = await fetchExistingSession(composerId);
+            const { hasNewMessages, newMessageStartIndex } = detectNewMessages(existingSession, messages);
+
+            if (hasNewMessages || !existingSession) {
+              // Get state.vscdb modification time
+              const stateDbModTime = await getStateDbModificationTime();
+
+              if (!existingSession) {
+                // First time reading this session - use state.vscdb mtime for ALL messages
+                // since createdAt is often stale (when conversation was first created, not when messages were added)
+                console.log(`[Cursor Reader] 🕐 New session detected - applying heuristic timestamp to all ${messages.length} message(s) in composer ${composerId.substring(0, 8)}...`);
+                console.log(`[Cursor Reader]   Heuristic timestamp: ${stateDbModTime}`);
+
+                for (const message of messages) {
+                  if (message) {
+                    message.timestamp = stateDbModTime;
+                  }
+                }
+                composerHeuristicTimestampsApplied++;
+              } else if (hasNewMessages) {
+                // Session exists - only update new messages
+                const newMessageCount = messages.length - newMessageStartIndex;
+                console.log(`[Cursor Reader] 🕐 Applying heuristic timestamp to ${newMessageCount} new message(s) in composer ${composerId.substring(0, 8)}...`);
+                console.log(`[Cursor Reader]   Existing: ${existingSession?.messages?.length || 0} messages, Current: ${messages.length} messages`);
+                console.log(`[Cursor Reader]   Heuristic timestamp: ${stateDbModTime}`);
+
+                // Apply heuristic timestamp only to new messages
+                for (let i = newMessageStartIndex; i < messages.length; i++) {
+                  const message = messages[i];
+                  if (message) {
+                    message.timestamp = stateDbModTime;
+                  }
+                }
+                composerHeuristicTimestampsApplied++;
+              }
+            }
+          } catch (error) {
+            // Don't let heuristic timestamp errors stop the whole import
+            console.warn(`[Cursor Reader] Error applying heuristic timestamp to composer ${composerId.substring(0, 8)}:`, error);
+          }
+        }
+
         if (messages.length === 0) {
           conversationsWithNoMessages++;
           continue;
@@ -945,14 +1164,7 @@ export function readCursorHistories(lookbackDays?: number): CursorConversation[]
           metadata.conversationName = projectInfo.conversationName;
         }
 
-        // Apply lookback filter if specified
-        if (cutoffDate) {
-          const convDate = new Date(conversationTimestamp);
-          if (convDate < cutoffDate) {
-            // Skip conversations outside lookback period
-            continue;
-          }
-        }
+        // Note: lookback filter already applied at the start of the loop
 
         conversations.push({
           id: composerId,
@@ -963,13 +1175,14 @@ export function readCursorHistories(lookbackDays?: number): CursorConversation[]
         });
       }
 
-      console.log(`[Cursor] Parsed ${conversations.length} conversations with messages`);
-      console.log(`[Cursor] Total messages extracted: ${totalMessagesExtracted}`);
-      console.log(`[Cursor] Debug stats:`);
-      console.log(`  - Storage format: ${format}`);
-      console.log(`  - Conversations from 'conversation' array: ${conversationsFromConversationArray}`);
-      console.log(`  - Conversations from separate bubble entries: ${conversationsFromBubbleEntries}`);
-      console.log(`  - Conversations with no valid messages: ${conversationsWithNoMessages}`);
+      console.log(`\n[Cursor Composer] ✓ Parsed ${conversations.length} composer conversations with messages`);
+      console.log(`[Cursor Composer] Total messages: ${totalMessagesExtracted}`);
+      if (skippedByDate > 0) {
+        console.log(`[Cursor Composer] Skipped ${skippedByDate} old conversations (outside ${lookbackDays || 30}-day window)`);
+      }
+      if (composerHeuristicTimestampsApplied > 0) {
+        console.log(`[Cursor Composer] 🕐 Applied heuristic timestamps to ${composerHeuristicTimestampsApplied} conversation(s) with new messages`);
+      }
 
       if (format === 'ItemTable' && conversationsWithNoMessages > 0) {
         console.log(`[Cursor] WARNING: New ItemTable format detected with ${conversationsWithNoMessages} conversations without messages`);
@@ -985,17 +1198,21 @@ export function readCursorHistories(lookbackDays?: number): CursorConversation[]
     console.error('[Cursor] Error reading Cursor histories:', error);
   }
 
-  // Read Copilot sessions from workspace databases
+  // Read Copilot sessions from workspace databases (separate from Composer)
+  console.log(`\n[Cursor Copilot] Reading Copilot sessions from workspace databases...`);
   try {
-    const copilotConversations = readCopilotSessions(cutoffDate);
+    const copilotConversations = await readCopilotSessions(cutoffDate);
     conversations.push(...copilotConversations);
   } catch (error) {
-    console.error('[Cursor] Error reading Copilot sessions:', error);
+    console.error('[Cursor Copilot] Error reading Copilot sessions:', error);
   }
 
-  console.log(`[Cursor] Total conversations: ${conversations.length}`);
-  console.log(`  - Composer: ${conversations.filter(c => c.conversationType === 'composer').length}`);
-  console.log(`  - Copilot: ${conversations.filter(c => c.conversationType === 'copilot').length}`);
+  const composerCount = conversations.filter(c => c.conversationType === 'composer').length;
+  const copilotCount = conversations.filter(c => c.conversationType === 'copilot').length;
+
+  console.log(`\n[Cursor] ✓ Total conversations collected: ${conversations.length}`);
+  console.log(`[Cursor]   • Composer: ${composerCount}`);
+  console.log(`[Cursor]   • Copilot: ${copilotCount}`);
 
   return conversations;
 }

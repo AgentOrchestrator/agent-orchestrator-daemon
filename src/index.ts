@@ -42,8 +42,8 @@ async function processHistories() {
   const claudeHistories = readChatHistories(lookbackDays);
   console.log(`Found ${claudeHistories.length} Claude Code chat histories.`);
 
-  // Read Cursor histories (with timestamp filtering)
-  const cursorConversations = readCursorHistories(lookbackDays);
+  // Read Cursor histories (with timestamp filtering and authenticated session for heuristic timestamps)
+  const cursorConversations = await readCursorHistories(lookbackDays, accessToken, refreshToken);
   const cursorHistories = convertCursorToStandardFormat(cursorConversations);
   console.log(`Found ${cursorHistories.length} Cursor chat histories.`);
 
