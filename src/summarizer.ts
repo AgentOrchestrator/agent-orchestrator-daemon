@@ -398,7 +398,9 @@ Provide ONLY the title, nothing else:`;
  * Fetches sessions that need summary updates.
  * Returns sessions that:
  * 1. Were created within the specified time window (default 24 hours)
- * 2. Either have no summary OR their message count has changed
+ * 2. Either have no summary OR meet the update thresholds:
+ *    - At least 10 new messages since last summary, AND
+ *    - At least 30 minutes since last summary generation
  * 3. User has AI summaries enabled in preferences
  */
 export async function getSessionsNeedingSummaryUpdate(
@@ -407,8 +409,13 @@ export async function getSessionsNeedingSummaryUpdate(
   const cutoffTime = new Date();
   cutoffTime.setHours(cutoffTime.getHours() - withinHours);
 
+  // Cost-saving thresholds
+  const MESSAGE_THRESHOLD = 10; // Only update after 10 new messages
+  const TIME_THROTTLE_MINUTES = 30; // Wait at least 30 minutes between updates
+
   console.log(`[Summary Updater] Fetching sessions needing summary update...`);
   console.log(`[Summary Updater] Cutoff time: ${cutoffTime.toISOString()}`);
+  console.log(`[Summary Updater] Thresholds: ${MESSAGE_THRESHOLD} messages, ${TIME_THROTTLE_MINUTES} minutes`);
 
   // Fetch recent sessions
   const { data, error } = await supabase
@@ -462,11 +469,23 @@ export async function getSessionsNeedingSummaryUpdate(
       continue;
     }
 
-    // Needs update if no summary exists or message count changed
+    // Always update if no summary exists
+    if (!session.ai_summary || !session.ai_summary_generated_at) {
+      needsUpdate.push(session);
+      continue;
+    }
+
+    // Calculate messages since last summary
+    const messagesSinceLastSummary = currentMessageCount - (session.ai_summary_message_count || 0);
+
+    // Calculate time since last summary
+    const lastSummaryTime = new Date(session.ai_summary_generated_at);
+    const minutesSinceLastSummary = (Date.now() - lastSummaryTime.getTime()) / 1000 / 60;
+
+    // Only update if BOTH thresholds are met (cost-effective approach)
     if (
-      !session.ai_summary ||
-      !session.ai_summary_generated_at ||
-      session.ai_summary_message_count !== currentMessageCount
+      messagesSinceLastSummary >= MESSAGE_THRESHOLD &&
+      minutesSinceLastSummary >= TIME_THROTTLE_MINUTES
     ) {
       needsUpdate.push(session);
     }
@@ -479,7 +498,9 @@ export async function getSessionsNeedingSummaryUpdate(
  * Fetches sessions that need keyword updates.
  * Returns sessions that:
  * 1. Were created within the specified time window (default 24 hours)
- * 2. Either have no keywords OR their message count has changed
+ * 2. Either have no keywords OR meet the update thresholds:
+ *    - At least 10 new messages since last keyword generation, AND
+ *    - At least 30 minutes since last keyword generation
  * 3. User has AI summaries enabled in preferences
  */
 export async function getSessionsNeedingKeywordUpdate(
@@ -487,6 +508,14 @@ export async function getSessionsNeedingKeywordUpdate(
 ): Promise<ChatHistory[]> {
   const cutoffTime = new Date();
   cutoffTime.setHours(cutoffTime.getHours() - withinHours);
+
+  // Cost-saving thresholds (same as summary updates)
+  const MESSAGE_THRESHOLD = 10; // Only update after 10 new messages
+  const TIME_THROTTLE_MINUTES = 30; // Wait at least 30 minutes between updates
+
+  console.log(`[Keyword Updater] Fetching sessions needing keyword update...`);
+  console.log(`[Keyword Updater] Cutoff time: ${cutoffTime.toISOString()}`);
+  console.log(`[Keyword Updater] Thresholds: ${MESSAGE_THRESHOLD} messages, ${TIME_THROTTLE_MINUTES} minutes`);
 
   // Fetch recent sessions
   const { data, error } = await supabase
@@ -540,10 +569,23 @@ export async function getSessionsNeedingKeywordUpdate(
       continue;
     }
 
-    // Needs update if no keywords exist or message count changed
+    // Always update if no keywords exist
+    if (!session.ai_keywords_generated_at) {
+      needsUpdate.push(session);
+      continue;
+    }
+
+    // Calculate messages since last keyword generation
+    const messagesSinceLastKeywords = currentMessageCount - (session.ai_keywords_message_count || 0);
+
+    // Calculate time since last keyword generation
+    const lastKeywordsTime = new Date(session.ai_keywords_generated_at);
+    const minutesSinceLastKeywords = (Date.now() - lastKeywordsTime.getTime()) / 1000 / 60;
+
+    // Only update if BOTH thresholds are met (cost-effective approach)
     if (
-      !session.ai_keywords_generated_at ||
-      session.ai_keywords_message_count !== currentMessageCount
+      messagesSinceLastKeywords >= MESSAGE_THRESHOLD &&
+      minutesSinceLastKeywords >= TIME_THROTTLE_MINUTES
     ) {
       needsUpdate.push(session);
     }
