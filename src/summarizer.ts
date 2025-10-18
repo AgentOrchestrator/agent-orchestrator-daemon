@@ -27,6 +27,12 @@ interface Message {
   pastedContents?: Record<string, any>;
 }
 
+interface StructuredSummary {
+  summary: string; // max 6 words
+  problems: string[]; // each max 6 words
+  progress: 'looping' | 'smooth';
+}
+
 interface ChatHistory {
   id: string;
   messages: Message[];
@@ -94,7 +100,11 @@ async function getUserPreferences(userId: string): Promise<UserPreferences> {
 
 async function generateSessionSummary(messages: Message[], retries = 3): Promise<string> {
   if (messages.length === 0) {
-    return 'No messages in this session yet.';
+    return JSON.stringify({
+      summary: 'No messages yet',
+      problems: [],
+      progress: 'smooth'
+    });
   }
 
   // Use fallback summarizer if in development mode or OpenAI key not configured
@@ -117,15 +127,33 @@ async function generateSessionSummary(messages: Message[], retries = 3): Promise
     .map((msg, idx) => `Message ${idx + 1}: ${msg.display}`)
     .join('\n\n');
 
-  const prompt = `Analyze this AI coding assistant session and provide a concise summary (2-3 sentences) covering:
-1. What is the user attempting to accomplish?
-2. What problems or errors are they encountering?
-3. Are they making progress or stuck/circling around the same issue?
+  const prompt = `Analyze this AI coding assistant session and provide a structured summary.
 
 Session transcript:
 ${conversationText}
 
-Provide a brief, insightful summary:`;
+Respond with ONLY valid JSON in this exact format:
+\`\`\`json
+{
+  "summary": "max 6 words describing what user is doing",
+  "problems": ["problem 1 (max 6 words)", "problem 2 (max 6 words)"],
+  "progress": "looping" or "smooth"
+}
+\`\`\`
+
+Rules:
+- summary: Maximum 6 words describing the main task
+- problems: Array of issues encountered (each max 6 words). Empty array if no problems.
+- progress: "looping" if stuck/repeating same issues, "smooth" if making progress
+
+Example:
+\`\`\`json
+{
+  "summary": "Building authentication with Gmail API",
+  "problems": ["OAuth token refresh failing", "Rate limit exceeded errors"],
+  "progress": "looping"
+}
+\`\`\``;
 
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
@@ -134,18 +162,56 @@ Provide a brief, insightful summary:`;
         messages: [
           {
             role: 'system',
-            content: 'You are an expert at analyzing software development conversations and identifying user intent, problems, and progress patterns.',
+            content: 'You are an expert at analyzing software development conversations. Always respond with valid JSON only, wrapped in ```json ``` code blocks.',
           },
           {
             role: 'user',
             content: prompt,
           },
         ],
-        temperature: 0.7,
+        temperature: 0.3,
         max_tokens: 200,
       });
 
-      return response.choices[0]?.message?.content || 'Unable to generate summary.';
+      const content = response.choices[0]?.message?.content || '';
+
+      // Extract JSON from markdown code block
+      const jsonMatch = content.match(/```json\s*([\s\S]*?)\s*```/);
+      const jsonString = jsonMatch?.[1] ?? content;
+
+      // Try to parse the JSON
+      try {
+        const parsed: StructuredSummary = JSON.parse(jsonString);
+
+        // Validate the structure
+        if (!parsed.summary || !Array.isArray(parsed.problems) || !parsed.progress) {
+          throw new Error('Invalid JSON structure');
+        }
+
+        if (parsed.progress !== 'looping' && parsed.progress !== 'smooth') {
+          parsed.progress = 'smooth'; // Default to smooth if invalid
+        }
+
+        // Return as JSON string
+        return JSON.stringify(parsed);
+      } catch (parseError) {
+        console.error(`[Summary] JSON parsing failed on attempt ${attempt + 1}:`, parseError);
+        console.error('[Summary] Received content:', content);
+
+        // If this is not the last retry, try again
+        if (attempt < retries) {
+          console.log(`[Summary] Retrying due to parse error (${attempt + 1}/${retries})...`);
+          await new Promise(resolve => setTimeout(resolve, 500));
+          continue;
+        }
+
+        // Last attempt failed, return a fallback
+        return JSON.stringify({
+          summary: 'Summary generation failed',
+          problems: ['JSON parsing error'],
+          progress: 'smooth'
+        });
+      }
     } catch (error: any) {
       // Handle rate limit errors with exponential backoff
       if (error?.code === 'rate_limit_exceeded' && attempt < retries) {
@@ -158,7 +224,13 @@ Provide a brief, insightful summary:`;
       }
 
       console.error('Error generating summary with GPT-4o-mini:', error);
-      throw error;
+
+      // Return fallback on error
+      return JSON.stringify({
+        summary: 'Error generating summary',
+        problems: [],
+        progress: 'smooth'
+      });
     }
   }
 

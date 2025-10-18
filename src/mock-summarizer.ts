@@ -19,20 +19,47 @@ interface KeywordClassification {
 
 /**
  * Generate a simple summary without AI
- * Uses basic heuristics to create a summary from messages
+ * Uses basic heuristics to create a structured summary from messages
  */
 export function generateMockSummary(messages: Message[]): string {
   if (messages.length === 0) {
-    return 'No messages in this session yet.';
+    return JSON.stringify({
+      summary: 'No messages yet',
+      problems: [],
+      progress: 'smooth'
+    });
   }
 
-  // Get first and last messages
-  const firstMessage = messages[0]?.display.substring(0, 100) || '';
-  const lastMessage = messages[messages.length - 1]?.display.substring(0, 100) || '';
-  const messageCount = messages.length;
+  // Get first message for summary
+  const firstMessage = messages[0]?.display || '';
 
-  // Simple summary template
-  return `Session with ${messageCount} message${messageCount === 1 ? '' : 's'}. Started with: "${firstMessage}..." Last message: "${lastMessage}..."`;
+  // Extract a simple summary (first few words, max 6 words)
+  const summaryWords = firstMessage.split(/\s+/).slice(0, 6).join(' ');
+  const summary = summaryWords || 'Session activity';
+
+  // Check for common error patterns
+  const allText = messages.map(m => m.display.toLowerCase()).join(' ');
+  const problems: string[] = [];
+
+  if (allText.includes('error') || allText.includes('failed')) {
+    problems.push('Errors encountered');
+  }
+  if (allText.includes('bug') || allText.includes('issue')) {
+    problems.push('Bug reported');
+  }
+  if (allText.includes('timeout') || allText.includes('rate limit')) {
+    problems.push('Performance issues');
+  }
+
+  // Determine progress - if errors are mentioned repeatedly, likely looping
+  const errorCount = (allText.match(/error|failed|wrong/g) || []).length;
+  const progress = errorCount > 3 ? 'looping' : 'smooth';
+
+  return JSON.stringify({
+    summary,
+    problems: problems.slice(0, 3), // Max 3 problems
+    progress
+  });
 }
 
 /**
